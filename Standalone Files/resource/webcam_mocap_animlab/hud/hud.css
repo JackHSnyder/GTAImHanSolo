@@ -1,0 +1,13 @@
+/* Keep the root in the host's default colour scheme so the game stays visible. */
+:root{font-family:Arial,Helvetica,sans-serif;color:#fff;--hud-size:min(280px,32vw,45vh)}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent!important;background-image:none!important;pointer-events:none}
+[hidden]{display:none!important}
+#countdown{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);font-size:96px;font-weight:bold;text-shadow:0 2px 8px #0009}
+#panel{position:fixed;right:20px;top:20px;width:var(--hud-size);height:var(--hud-size);background:rgba(95,95,95,.55)}
+#scorePanel{position:fixed;right:calc(32px + var(--hud-size));top:20px;width:140px;max-width:calc(100vw - var(--hud-size) - 52px);padding:16px 10px;background:rgba(95,95,95,.55);text-align:center}
+#scoreLabel{font-size:12px;letter-spacing:1px}#scoreTotal{font-size:34px;font-weight:bold;margin:6px 0;font-variant-numeric:tabular-nums}#scoreDetail{font-size:12px;line-height:1.4}
+#skeleton{display:block;width:100%;height:100%}
+#goalLabel{margin-top:14px;padding-top:12px;border-top:1px solid #ffffff30;font-size:12px;letter-spacing:1px}
+#scoreGoal{font-size:24px;font-weight:bold;margin-top:4px;font-variant-numeric:tabular-nums}
+#empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:clamp(12px,1.2vw,18px);text-align:center;padding:12px}

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FiveM · Mocap Animation Lab</title><link rel="stylesheet" href="/style.css"></head>
+<body><main><p class="eyebrow">GTA V LEGACY / FIVEM · ANIMATION LAB 0.4.1</p>
+<h1>Animation lab.</h1><p class="intro">Record full-body motion locally, or connect the camera to the experimental FiveM lab. Your video stays on this computer.</p>
+<section class="controls"><label>Pairing token from /mocaplab preview or /mocaplabvisit<input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the token shown in FiveM"></label>
+<p class="small">For the live skeleton HUD, enter /mocaplabvisit in game, paste its token here and connect. Approach the model to show your skeleton while the recording plays. Keep this page visible beside FiveM.</p>
+<label>Motion scale <output id="gainValue">1.00</output><input id="gain" type="range" min="0.6" max="1.4" step="0.05" value="1"></label>
+<label><input id="refineHands" type="checkbox" checked> Refine wrists with hand tracking</label>
+<label><input id="rotateWrists" type="checkbox" checked> Drive wrist rotation in game (experimental)</label>
+<div class="buttons"><button id="start">Connect to FiveM</button><button id="stop" disabled>Stop camera</button></div>
+<p id="status" role="status">Ready. Record locally without a token, or paste a token to connect to FiveM.</p>
+<p id="handStatus" class="small" role="status">Hand tracking enabled · yellow wrist dots will show refined positions.</p>
+<p id="bodyStatus" class="small">Stand with both hips, knees and ankles visible. Bend both knees to control the crouch clip.</p><p id="endpoint" class="small"></p></section>
+<section class="controls" aria-labelledby="recordTitle">
+<h2 id="recordTitle">Record an animation</h2>
+<p>No FiveM connection or pairing token needed. A three-second countdown gives you time to stand back. Keep your whole body visible and this tab open.</p>
+<label>Recording length (seconds)<input id="duration" type="number" min="1" max="120" step="1" value="10"></label>
+<label><input id="saveVideo" type="checkbox" checked> Also save a local video for reference (no audio)</label>
+<div class="buttons"><button id="record">Record locally</button><button id="recordStop" disabled>Finish recording</button></div><p id="recordStatus" role="status">Choose a duration, then record. No FiveM token needed.</p>
+<p id="headStatus" class="small">Head rotation is included in recordings. Look straight ahead during the countdown, then turn, nod or tilt. No facial expressions are animated.</p>
+<p class="small">Keep “Refine wrists with hand tracking” enabled. Brief hand gaps are smoothed during conversion; longer losses hold wrist rotation relative to the arm. Keep hands well lit and visible for reliable turns.</p>
+<progress id="recordProgress" value="0" max="10" aria-label="Recording progress"></progress>
+<label>Rebuild a saved recording<input id="rebuildFile" type="file" accept=".json,application/json"></label>
+<p class="small">Choose original tracking (.capture.json) to rebuild an older take with the latest foot and wrist conversion. This stays on your computer and needs no camera or FiveM token.</p>
+<div id="recordResults" hidden>
+<h3>Your recording</h3>
+<div class="downloads"><a id="animationDownload" hidden>Download animation JSON</a><a id="bvhDownload" hidden>Download BVH animation</a><a id="rawDownload" hidden>Download original tracking</a><a id="videoDownload" hidden>Download video</a></div>
+<p id="recordWarnings" class="small"></p>
+</div>
+<p class="small"><strong>GTA conversion:</strong> downloads are intermediate animation files, not a ready-to-install .ycd. Use the included Blender tool with a GTA character skeleton, then export through Sollumz and CodeWalker. <a href="/recording-guide" target="_blank" rel="noopener">Conversion instructions</a> · <a href="/gta-importer.py" download="mocap_gta_importer.py">Blender tool</a></p>
+</section>
+<section id="previewSection" class="controls" hidden aria-labelledby="previewTitle"><h2 id="previewTitle">Recorded animation preview</h2>
+<canvas id="animationPreview" width="640" height="480" aria-label="Converted skeleton preview"></canvas>
+<p class="small">Head direction: yellow eye line, green crown, coral nose. Use Side view to check nodding.</p>
+<div class="buttons"><button id="previewPlay">Play animation</button><label><input id="previewSide" type="checkbox"> Side view</label></div>
+<label>Playback position<input id="previewSeek" type="range" min="0" max="0" step="1" value="0"></label><p id="previewTime" class="small"></p>
+</section>
+<div class="reference-layout">
+<section class="view"><video id="video" autoplay muted playsinline></video><canvas id="overlay"></canvas><span>LOCAL CAMERA PREVIEW · MIRRORED</span></section>
+<section class="youtube-panel" aria-labelledby="youtubeTitle">
+<h2 id="youtubeTitle">YouTube reference</h2>
+<label>YouTube video link (optional)<input id="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off"></label>
+<label>Start at (seconds or M:SS)<input id="youtubeStart" type="text" value="0:00" placeholder="1:30" spellcheck="false"></label>
+<div class="buttons"><button id="youtubeLoad">Load video</button><button id="youtubePreview">Preview / play ads</button><button id="youtubeCue">Ready / cue start</button></div>
+<p id="youtubeStatus" class="small" role="status">Optional: load a video, preview it, then cue your starting timestamp before recording.</p>
+<div id="youtubeHolder" aria-label="YouTube reference player"></div>
+<p class="small">YouTube controls ads and buffering. Finish any ads in the player before cueing; the website cannot guarantee ad-free or frame-perfect playback. The video plays when the recording countdown ends and pauses when recording stops. Your camera and tracking data are not sent to YouTube.</p>
+</section></div>
+<p class="small">Stand facing the camera with shoulders, hips, and hands visible. Keep this tab visible beside FiveM. Tracking pauses when landmarks disappear. Use <strong>/mocaplab stop</strong> in game to end the session.</p>
+</main><script type="module" src="/app.js"></script></body></html>

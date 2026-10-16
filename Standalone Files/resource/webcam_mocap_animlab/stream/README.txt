@@ -1,0 +1,1 @@
+Place compiled webcam_recording.ycd here. Do not put .ycd.xml, .bvh or JSON here. Restart webcam_mocap_animlab after adding an asset. Then /mocaplab preview and /mocaplabplay webcam_recording webcam_take.

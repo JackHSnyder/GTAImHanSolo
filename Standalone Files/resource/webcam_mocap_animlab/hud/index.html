@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mocap comparison</title><link rel="stylesheet" href="hud.css"></head><body>
+<div id="countdown" hidden aria-label="Scoring countdown"></div>
+<aside id="scorePanel" hidden aria-label="Hand matching score">
+  <div id="scoreLabel">SCORE</div><div id="scoreTotal">0</div><div id="scoreDetail">Checking each second</div>
+  <div id="goalLabel">GOAL</div><div id="scoreGoal">0</div>
+</aside>
+<aside id="panel" hidden aria-label="Live camera skeleton">
+  <canvas id="skeleton" width="640" height="640" aria-label="Your camera skeleton"></canvas>
+  <div id="empty">Connect Live Camera</div>
+</aside><script src="hud.js"></script></body></html>
