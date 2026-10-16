@@ -119,7 +119,7 @@ async function loadVisitClub(s) {
 }
 let lastClubFailure='';
 function clubStatus(s) {
-  return `Nightclub client 0.3.21: interior ${s.interior||0}; valid: ${!!s.interior&&IsValidInterior(s.interior)}; ready: ${!!s.interior&&IsInteriorReady(s.interior)}; IPL active: ${IsIplActive(clubIpl)}; collision loaded: ${HasCollisionLoadedAroundEntity(s.player)}; loading: ${s.loading}; recovering: ${s.clubMissingSince!==undefined}.`;
+  return `Nightclub client 0.3.22: interior ${s.interior||0}; valid: ${!!s.interior&&IsValidInterior(s.interior)}; ready: ${!!s.interior&&IsInteriorReady(s.interior)}; IPL active: ${IsIplActive(clubIpl)}; collision loaded: ${HasCollisionLoadedAroundEntity(s.player)}; loading: ${s.loading}; recovering: ${s.clubMissingSince!==undefined}.`;
 }
 function saveClubFailure(s,reason) {
   lastClubFailure=`Last nightclub failure: ${reason}. ${clubStatus(s)}`;
@@ -362,8 +362,9 @@ on('__cfx_nui:mocapMusicStatus',(data,cb)=>{
   if(data.kind==='error'||data.kind==='warning') {
     const text=`Music ${data.track}: ${data.detail}`;
     if(text!==lastMusicError){lastMusicError=text;notice(text);}
-  } else if(data.kind==='status'||(data.kind==='playing'&&data.backend==='decoded-crossfade')) {
+  } else if(data.kind==='status'||(data.kind==='playing'&&['decoded-crossfade','decoded-animation'].includes(data.backend))) {
     const loop=data.backend==='decoded-crossfade'?`requested overlap: ${Number(data.requestedCrossfadeSeconds||0).toFixed(3)}s; applied overlap: ${Number(data.crossfadeSeconds||0).toFixed(3)}s; source: ${Number(data.sourceSeconds||0).toFixed(3)}s; loop: ${Number(data.loopSeconds||0).toFixed(3)}s; context: ${data.contextState}`:
+      data.backend==='decoded-animation'?`continuous animation audio; source: ${Number(data.sourceSeconds||0).toFixed(3)}s; context: ${data.contextState}`:
       `crossfade helper: ${!!data.crossfadeHelperLoaded}; Web Audio: ${!!data.webAudioSupported}`;
     if(data.kind==='playing'&&loop===lastLoopInfo)return;
     lastLoopInfo=loop;
@@ -386,7 +387,7 @@ RegisterCommand('mocaplabmusic',(_source,args)=>{
     notice(`Music ${track}: audio/${file||'(disabled)'}; ${content?'file found':'FILE MISSING or disabled'}; header: ${format}; volume: ${config[`${track}Volume`]}.`);
   }
   const hudSource=LoadResourceFile(resource,'hud/hud.js')||'';
-  notice(`Music client 0.3.21; HUD ready: ${hudReady}; mode: ${hudMusicMode}; requested crossfade: ${config.backgroundCrossfadeSeconds}s (${crossfadeOverride===null?'config':'saved override'}); bundled crossfade: ${hudSource.includes('MOCAP_CROSSFADE_BUNDLED')?'found':'MISSING / older HUD'}. Waiting for audio UI status…`);
+  notice(`Music client 0.3.22; HUD ready: ${hudReady}; mode: ${hudMusicMode}; requested crossfade: ${config.backgroundCrossfadeSeconds}s (${crossfadeOverride===null?'config':'saved override'}); bundled crossfade: ${hudSource.includes('MOCAP_CROSSFADE_BUNDLED')?'found':'MISSING / older HUD'}. Waiting for audio UI status…`);
   SendNuiMessage(JSON.stringify({type:'mocapMusicQuery'}));
 },false);
 RegisterNuiCallbackType('mocapHudReady');
@@ -442,7 +443,7 @@ RegisterCommand('mocaplabhud',(_source,args)=>{
     const resource=GetCurrentResourceName();
     const missing=['hud/index.html','hud/hud.css','hud/hud.js'].filter(file=>!LoadResourceFile(resource,file));
     const uiPage=GetResourceMetadata(resource,'ui_page',0)||'MISSING';
-    return notice(`HUD client 0.3.21 | ui_page: ${uiPage} | missing files: ${missing.join(', ')||'none'} | page ready: ${hudReady} | panel rendered: ${hudRendered} | message accepted: ${hudLastDelivery} | scene: ${scene?.kind||mode||'none'} | camera: ${!!scene?.camera} | skeleton age: ${pose?GetGameTimer()-received+'ms':'no camera packets'}.`);
+    return notice(`HUD client 0.3.22 | ui_page: ${uiPage} | missing files: ${missing.join(', ')||'none'} | page ready: ${hudReady} | panel rendered: ${hudRendered} | message accepted: ${hudLastDelivery} | scene: ${scene?.kind||mode||'none'} | camera: ${!!scene?.camera} | skeleton age: ${pose?GetGameTimer()-received+'ms':'no camera packets'}.`);
   }
   if(args[0]!=='mirror')return notice('Use /mocaplabhud test, /mocaplabhud status, or /mocaplabhud mirror.');
   hudMirrored=!hudMirrored;updateComparisonHud(true);
@@ -501,7 +502,7 @@ RegisterCommand('mocaplabground',(_source,args)=>{
     if(r?.stageActors)configureGrounding(r,groundingOverride);
     notice(`Recorded foot grounding ${groundingOverride?'enabled':'disabled'} until resource restart.`);
   } else if(args.length&&args[0]!=='status')return notice('Use /mocaplabground on, off, or status.');
-  notice(`Grounding client 0.3.21; active: ${!!r?.grounding}; ${lastGroundingReport}`);
+  notice(`Grounding client 0.3.22; active: ${!!r?.grounding}; ${lastGroundingReport}`);
 },false);
 function stopRecordedPlayback() {
   recordedLoad++;
