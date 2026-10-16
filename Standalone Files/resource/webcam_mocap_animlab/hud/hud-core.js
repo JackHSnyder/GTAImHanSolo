@@ -9,17 +9,29 @@ let renderReported=false;
 const musicPlayers=new Map();
 let currentMusic=null,musicSession=null;
 let backgroundLoop=null;
+let animationAudio=null;
+let sharedAudioContext=null;
+const getAudioContext=()=>sharedAudioContext??=new (globalThis.AudioContext||globalThis.webkitAudioContext)();
+const musicDiagnostics={messages:0,changes:0,watchdogStops:0,history:[]};
+function musicEvent(text) {
+  musicDiagnostics.history.push(`${(performance.now()/1000).toFixed(2)}s ${text}`);
+  if(musicDiagnostics.history.length>6)musicDiagnostics.history.shift();
+}
 function reportMusic(kind,detail='') {
   const audio=musicPlayers.get(currentMusic);
   const loop=currentMusic?.startsWith('background:')?backgroundLoop?.snapshot():null;
-  notifyGame('mocapMusicStatus',{version:'0.3.14',kind,detail,track:currentMusic||'none',backend:audio?'html-audio':'none',
+  const animation=currentMusic?.startsWith('animation:')?animationAudio?.snapshot():null;
+  notifyGame('mocapMusicStatus',{version:'0.3.23',kind,detail,track:currentMusic||'none',backend:audio?'html-audio':'none',
     crossfadeHelperLoaded:typeof globalThis.CrossfadeBackground==='function',
     webAudioSupported:typeof(globalThis.AudioContext||globalThis.webkitAudioContext)==='function',
     paused:audio?.paused??true,readyState:audio?.readyState??0,time:audio?.currentTime||0,
-    volume:audio?.volume??0,errorCode:audio?.error?.code||0,...loop});
+    volume:audio?.volume??0,errorCode:audio?.error?.code||0,...loop,...animation,
+    diagnostics:{...musicDiagnostics,session:musicSession,messageAgeMs:Math.round(performance.now()-lastMessage)}});
 }
 function stopMusic(reset=false) {
+  if(currentMusic)musicEvent(`stop ${currentMusic} reset=${reset}`);
   backgroundLoop?.pause(reset);
+  animationAudio?.pause(true);
   for(const audio of musicPlayers.values()) {
     audio.pause();if(reset)audio.currentTime=0;
   }
@@ -32,10 +44,19 @@ function updateMusic(music) {
     stopMusic(mode==='off');return;
   }
   const key=`${mode}:${file}`,changed=key!==currentMusic||music.session!==musicSession;
+  if(changed){musicDiagnostics.changes++;musicEvent(`${key} session=${music.session}`);}
+  if(mode==='animation'&&globalThis.DecodedAnimation?.supported()) {
+    backgroundLoop?.pause();for(const audio of musicPlayers.values())audio.pause();
+    currentMusic=key;musicSession=music.session;
+    animationAudio??=new globalThis.DecodedAnimation({contextFactory:getAudioContext,onError:detail=>reportMusic('error',detail),onPlaying:()=>reportMusic('playing')});
+    animationAudio.setTrack(`../audio/${encodeURIComponent(file)}`,Number.isFinite(music.volume)?music.volume:.5,music.seconds,music.session);
+    return;
+  }
+  animationAudio?.pause(true);
   if(mode==='background'&&globalThis.CrossfadeBackground?.supported()) {
     for(const audio of musicPlayers.values())audio.pause();
     currentMusic=key;musicSession=music.session;
-    backgroundLoop??=new globalThis.CrossfadeBackground({onError:detail=>reportMusic('error',detail),onPlaying:()=>reportMusic('playing')});
+    backgroundLoop??=new globalThis.CrossfadeBackground({contextFactory:getAudioContext,onError:detail=>reportMusic('error',detail),onPlaying:()=>reportMusic('playing')});
     backgroundLoop.setTrack(`../audio/${encodeURIComponent(file)}`,Number.isFinite(music.volume)?music.volume:.5,music.crossfadeSeconds);
     return;
   }
@@ -46,7 +67,7 @@ function updateMusic(music) {
     audio.addEventListener('error',()=>{
       const reasons={1:'loading aborted',2:'file/network loading failed',3:'audio decoding failed',4:'file missing or audio format unsupported'};
       const reason=reasons[audio.error?.code]||'audio loading failed';
-      notifyGame('mocapMusicStatus',{version:'0.3.14',kind:'error',track:key,errorCode:audio.error?.code||0,
+      notifyGame('mocapMusicStatus',{version:'0.3.23',kind:'error',track:key,errorCode:audio.error?.code||0,
         detail:`${reason}. Check audio/${file}, its real format, and fxmanifest.lua.`});
     });
     audio.addEventListener('playing',()=>{if(currentMusic===key)reportMusic('playing');});
@@ -63,7 +84,10 @@ function updateMusic(music) {
   audio.volume=Number.isFinite(music.volume)?Math.max(0,Math.min(1,music.volume)):.5;
   if(mode==='animation') {
     audio.mocapSeconds=Math.max(0,Number(music.seconds)||0);
-    if(changed||Math.abs(audio.currentTime-audio.mocapSeconds)>.35)seekMusic(audio,audio.mocapSeconds);
+    // Seek only when starting a session (or when metadata first arrives).
+    // Re-seeking a slow/buffering stream on every heartbeat can prevent it
+    // from ever advancing, producing repeated fragments or silence.
+    if(changed)seekMusic(audio,audio.mocapSeconds);
   }
   // An ended animation track stays silent until the next replay.
   if(changed||(audio.paused&&!audio.ended&&!audio.error&&!audio.mocapPending&&performance.now()>=(audio.mocapRetryAt||0))) {
@@ -126,12 +150,13 @@ function render(data) {
 window.addEventListener('message',event=>{
   if(event.data?.type==='mocapMusicQuery') {reportMusic('status');return;}
   if(event.data?.type!=='mocapComparison')return;
-  state=event.data;lastMessage=performance.now();render(state);
+  state=event.data;lastMessage=performance.now();musicDiagnostics.messages++;render(state);
   if(!state.visible)renderReported=false;
 });
 // Clear an orphaned HUD if the game script stops sending updates unexpectedly.
 setInterval(()=>{
   if((state?.visible||state?.scoreVisible||currentMusic)&&performance.now()-lastMessage>1500) {
+    musicDiagnostics.watchdogStops++;musicEvent('heartbeat timeout');
     state={...state,visible:false,scoreVisible:false,skeleton:null,music:{mode:'off'}};render(state);
   }
 },500);

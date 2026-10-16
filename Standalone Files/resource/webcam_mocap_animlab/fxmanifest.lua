@@ -2,7 +2,7 @@ fx_version 'cerulean'
 game 'gta5'
 author 'Webcam Mocap Animation Lab'
 description 'Animation lab: live crouch and wrists, plus recorded YCD playback'
-version '0.3.22'
+version '0.3.23'
 ui_page 'hud/index.html'
 files {
   'hud/index.html',

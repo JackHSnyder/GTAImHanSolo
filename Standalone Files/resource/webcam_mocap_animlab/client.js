@@ -119,7 +119,7 @@ async function loadVisitClub(s) {
 }
 let lastClubFailure='';
 function clubStatus(s) {
-  return `Nightclub client 0.3.22: interior ${s.interior||0}; valid: ${!!s.interior&&IsValidInterior(s.interior)}; ready: ${!!s.interior&&IsInteriorReady(s.interior)}; IPL active: ${IsIplActive(clubIpl)}; collision loaded: ${HasCollisionLoadedAroundEntity(s.player)}; loading: ${s.loading}; recovering: ${s.clubMissingSince!==undefined}.`;
+  return `Nightclub client 0.3.23: interior ${s.interior||0}; valid: ${!!s.interior&&IsValidInterior(s.interior)}; ready: ${!!s.interior&&IsInteriorReady(s.interior)}; IPL active: ${IsIplActive(clubIpl)}; collision loaded: ${HasCollisionLoadedAroundEntity(s.player)}; loading: ${s.loading}; recovering: ${s.clubMissingSince!==undefined}.`;
 }
 function saveClubFailure(s,reason) {
   lastClubFailure=`Last nightclub failure: ${reason}. ${clubStatus(s)}`;
@@ -369,17 +369,24 @@ on('__cfx_nui:mocapMusicStatus',(data,cb)=>{
     if(data.kind==='playing'&&loop===lastLoopInfo)return;
     lastLoopInfo=loop;
     notice(`Music UI ${data.version}: ${data.track}; backend: ${data.backend||'older UI'}; ${loop}; paused: ${data.paused}; ready: ${data.readyState}/4; time: ${Number(data.time||0).toFixed(1)}s; volume: ${data.volume}; media error: ${data.errorCode||'none'}. ${data.detail||''}`);
+    if(data.kind==='status'&&data.diagnostics) {
+      const d=data.diagnostics;
+      notice(`Music lifecycle: session ${d.session??'none'}; source starts ${data.starts??'n/a'}, stops ${data.stops??'n/a'}, session changes ${data.sessionChanges??'n/a'}; audio clock ${Number(data.audioClock||0).toFixed(3)}s; last start offset ${Number(data.lastStartOffset||0).toFixed(3)}s; last stop ${data.lastStopReason||'none'}; messages ${d.messages}; mode/session changes ${d.changes}; heartbeat stops ${d.watchdogStops}; message age ${d.messageAgeMs}ms.`);
+      notice(`Music recent events: ${Array.isArray(d.history)?d.history.join(' | '):'none'}`);
+    }
   }
 });
 RegisterCommand('mocaplabmusic',(_source,args)=>{
   const action=args[0]||'status';
   if(action==='stop') {musicTest=null;updateComparisonHud(true);return notice('Music test stopped; room music restored.');}
-  if(action==='test'&&['background','animation'].includes(args[1])) {
-    musicTest={mode:args[1],startedAt:GetGameTimer(),until:GetGameTimer()+10000};
+  if(action==='test'&&['background','animation','animation-loop','background-once'].includes(args[1])) {
+    const kind=args[1],mode=kind==='animation-loop'?'background':kind==='background-once'?'animation':kind;
+    const fileKind=kind==='animation-loop'?'animation':kind==='background-once'?'background':kind;
+    musicTest={mode,fileKind,zeroOverlap:kind==='animation-loop',startedAt:GetGameTimer(),until:GetGameTimer()+10000};
     lastMusicError='';updateComparisonHud(true);
     return notice(`Testing ${args[1]} music for 10 seconds. /mocaplabmusic status shows file and playback details.`);
   }
-  if(action!=='status')return notice('Use /mocaplabmusic status, /mocaplabmusic test background, /mocaplabmusic test animation, or /mocaplabmusic stop.');
+  if(action!=='status')return notice('Use /mocaplabmusic status, /mocaplabmusic test background|animation|animation-loop|background-once, or /mocaplabmusic stop.');
   const config=getMusicConfig(),resource=GetCurrentResourceName();
   for(const track of ['background','animation']) {
     const file=config[`${track}File`],content=typeof file==='string'&&file?LoadResourceFile(resource,`audio/${file}`):null;
@@ -387,7 +394,7 @@ RegisterCommand('mocaplabmusic',(_source,args)=>{
     notice(`Music ${track}: audio/${file||'(disabled)'}; ${content?'file found':'FILE MISSING or disabled'}; header: ${format}; volume: ${config[`${track}Volume`]}.`);
   }
   const hudSource=LoadResourceFile(resource,'hud/hud.js')||'';
-  notice(`Music client 0.3.22; HUD ready: ${hudReady}; mode: ${hudMusicMode}; requested crossfade: ${config.backgroundCrossfadeSeconds}s (${crossfadeOverride===null?'config':'saved override'}); bundled crossfade: ${hudSource.includes('MOCAP_CROSSFADE_BUNDLED')?'found':'MISSING / older HUD'}. Waiting for audio UI status…`);
+  notice(`Music client 0.3.23; HUD ready: ${hudReady}; mode: ${hudMusicMode}; requested crossfade: ${config.backgroundCrossfadeSeconds}s (${crossfadeOverride===null?'config':'saved override'}); bundled crossfade: ${hudSource.includes('MOCAP_CROSSFADE_BUNDLED')?'found':'MISSING / older HUD'}. Waiting for audio UI status…`);
   SendNuiMessage(JSON.stringify({type:'mocapMusicQuery'}));
 },false);
 RegisterNuiCallbackType('mocapHudReady');
@@ -419,12 +426,13 @@ function updateComparisonHud(force=false) {
   const countdown=visible&&r?.score?ScoreMath.timing(r.score.delaySeconds,progressSeconds).countdown:null;
   const hasJoints=skeleton?.points.some(p=>p&&p[2]>=.6);
   const musicConfig=getMusicConfig();
-  const file=musicConfig[`${musicMode}File`];
+  const fileKind=musicTest?.fileKind||musicMode;
+  const file=musicConfig[`${fileKind}File`];
   const musicFile=typeof file==='string'&&/^[a-zA-Z0-9_ -]+\.(ogg|mp3|wav)$/i.test(file)?file:null;
-  const volume=musicConfig[`${musicMode}Volume`];
+  const volume=musicConfig[`${fileKind}Volume`];
   hudLastDelivery=SendNuiMessage(JSON.stringify({type:'mocapComparison',visible,mirrored:hudMirrored,countdown,
     music:{mode:musicMode,file:musicFile,volume:Number.isFinite(volume)?Math.max(0,Math.min(1,volume)):.5,
-      crossfadeSeconds:musicConfig.backgroundCrossfadeSeconds,
+      crossfadeSeconds:musicTest?.zeroOverlap?0:musicConfig.backgroundCrossfadeSeconds,
       seconds:musicMode==='animation'?(musicTest?(now-musicTest.startedAt)/1000:visitMusicStarted?(now-scene.musicStartedAt)/1000:progressSeconds):0,
       session:musicTest?.startedAt??(musicMode==='animation'?(visitMusicStarted?scene.musicStartedAt:r?.startedAt):null)},
     scoreVisible,score:score?{total:score.total,goal:score.goal,lastPoints:score.lastPoints,samples:score.samples,
@@ -443,7 +451,7 @@ RegisterCommand('mocaplabhud',(_source,args)=>{
     const resource=GetCurrentResourceName();
     const missing=['hud/index.html','hud/hud.css','hud/hud.js'].filter(file=>!LoadResourceFile(resource,file));
     const uiPage=GetResourceMetadata(resource,'ui_page',0)||'MISSING';
-    return notice(`HUD client 0.3.22 | ui_page: ${uiPage} | missing files: ${missing.join(', ')||'none'} | page ready: ${hudReady} | panel rendered: ${hudRendered} | message accepted: ${hudLastDelivery} | scene: ${scene?.kind||mode||'none'} | camera: ${!!scene?.camera} | skeleton age: ${pose?GetGameTimer()-received+'ms':'no camera packets'}.`);
+    return notice(`HUD client 0.3.23 | ui_page: ${uiPage} | missing files: ${missing.join(', ')||'none'} | page ready: ${hudReady} | panel rendered: ${hudRendered} | message accepted: ${hudLastDelivery} | scene: ${scene?.kind||mode||'none'} | camera: ${!!scene?.camera} | skeleton age: ${pose?GetGameTimer()-received+'ms':'no camera packets'}.`);
   }
   if(args[0]!=='mirror')return notice('Use /mocaplabhud test, /mocaplabhud status, or /mocaplabhud mirror.');
   hudMirrored=!hudMirrored;updateComparisonHud(true);
@@ -502,7 +510,7 @@ RegisterCommand('mocaplabground',(_source,args)=>{
     if(r?.stageActors)configureGrounding(r,groundingOverride);
     notice(`Recorded foot grounding ${groundingOverride?'enabled':'disabled'} until resource restart.`);
   } else if(args.length&&args[0]!=='status')return notice('Use /mocaplabground on, off, or status.');
-  notice(`Grounding client 0.3.22; active: ${!!r?.grounding}; ${lastGroundingReport}`);
+  notice(`Grounding client 0.3.23; active: ${!!r?.grounding}; ${lastGroundingReport}`);
 },false);
 function stopRecordedPlayback() {
   recordedLoad++;
