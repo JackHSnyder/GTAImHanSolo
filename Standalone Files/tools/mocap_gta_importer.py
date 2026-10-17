@@ -6,7 +6,7 @@ The selected rig is duplicated; source animation and meshes are left intact.
 Sollumz is needed only for the subsequent GTA XML export operator.
 """
 bl_info = {"name": "Webcam Mocap GTA Importer", "author": "Webcam Mocap Lab",
-           "version": (0, 2, 8), "blender": (4, 2, 0), "category": "Import-Export"}
+           "version": (0, 2, 11), "blender": (4, 2, 0), "category": "Import-Export"}
 
 import bpy
 import json
@@ -14,6 +14,10 @@ import math
 import importlib
 import traceback
 import re
+import hashlib
+import time
+from array import array
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from mathutils import Vector, Quaternion, Matrix
 from bpy_extras.io_utils import ImportHelper, ExportHelper
@@ -421,7 +425,48 @@ def mirrored_bone_name(name):
     return name
 
 
-def create_mirrored_rig(context, source):
+def action_curves(rig):
+    action = rig.animation_data.action
+    if hasattr(action, "fcurves"):
+        return action.fcurves
+    slot = rig.animation_data.action_slot
+    for layer in action.layers:
+        for strip in layer.strips:
+            bag = strip.channelbag(slot)
+            if bag is not None:
+                return bag.fcurves
+    raise RuntimeError("Blender did not create an action channel bag.")
+
+
+def write_bulk_pose_curves(rig, bone_name, values, frames):
+    """Allocate each F-curve once, avoiding per-frame keyframe insertion."""
+    pose = rig.pose.bones[bone_name]
+    pose.rotation_mode = "QUATERNION"
+    pose.location = values[:3]
+    pose.rotation_quaternion = values[3:7]
+    pose.scale = values[7:10]
+    for prop, count, start in (("location", 3, 0), ("rotation_quaternion", 4, 3), ("scale", 3, 7)):
+        # One insert initializes both legacy and layered Blender action APIs.
+        pose.keyframe_insert(prop, frame=0, group=bone_name)
+        path = pose.path_from_id(prop)
+        curves = {fc.array_index: fc for fc in action_curves(rig) if fc.data_path == path}
+        for component in range(count):
+            index = start + component
+            first = values[index]
+            constant = all(abs(values[f * 10 + index] - first) < 1e-6 for f in range(frames))
+            points = (0, frames - 1) if constant else range(frames)
+            coordinates = array("f")
+            for frame in points:
+                coordinates.extend((float(frame), values[frame * 10 + index]))
+            curve = curves[component]
+            curve.keyframe_points.add(len(coordinates) // 2 - 1)
+            curve.keyframe_points.foreach_set("co", coordinates)
+            linear = bpy.types.Keyframe.bl_rna.properties["interpolation"].enum_items["LINEAR"].value
+            curve.keyframe_points.foreach_set("interpolation", [linear] * (len(coordinates) // 2))
+            curve.update()
+
+
+def iter_mirrored_rig(context, source):
     """Bake reflected opposite-side deformation, preserving the GTA rest rig.
 
     Reflecting an object's scale is not enough: it leaves the wrong anatomical
@@ -452,34 +497,50 @@ def create_mirrored_rig(context, source):
     facial = facial_bone_names(ordered)
     ordered = [b for b in ordered if b.name not in facial] + [b for b in ordered if b.name in facial]
     pairs = {b.name: mirrored_bone_name(b.name) if mirrored_bone_name(b.name) in rest else b.name for b in ordered}
+    frames = int(source["mocap_frames"])
+    if not 2 <= frames <= 3601:
+        raise ValueError("The mocap take needs 2 to 3601 frames (up to 120 seconds).")
     rig = create_preview_rig(context, source, source["mocap_clip"] + "_mirrored")
     rig.animation_data_create()
     action = bpy.data.actions.new(source["mocap_clip"] + "_mirrored")
     rig.animation_data.action = action
     old_frame = context.scene.frame_current
+    inverse_rest = {name: matrix.inverted() for name, matrix in rest.items()}
     previous = {}
     try:
-        for frame in range(int(source["mocap_frames"])):
+        values = {b.name: array("f", [0.0]) * (frames * 10) for b in ordered}
+        for frame in range(frames):
             context.scene.frame_set(frame)
-            context.view_layer.update()
             evaluated = source.evaluated_get(context.evaluated_depsgraph_get())
             captured = {b.name: evaluated.pose.bones[b.name].matrix.copy() for b in ordered}
             solved = {}
             for bone in ordered:
                 parent = solved.get(bone.parent.name) if bone.parent else None
                 if bone.name in facial:
-                    matrix = solved["SKEL_Head"] @ rest["SKEL_Head"].inverted() @ rest[bone.name]
+                    matrix = solved["SKEL_Head"] @ inverse_rest["SKEL_Head"] @ rest[bone.name]
                 else:
                     partner = pairs[bone.name]
-                    matrix = reflection @ captured[partner] @ rest[partner].inverted() @ reflection @ rest[bone.name]
-                write_pose_transform(bone, rig.pose.bones[bone.name], matrix, rest, parent,
-                                     previous, frame, location=True, scale=True)
+                    matrix = reflection @ captured[partner] @ inverse_rest[partner] @ reflection @ rest[bone.name]
+                basis = bone.convert_local_to_pose(matrix, rest[bone.name],
+                    parent_matrix=parent if parent is not None else Matrix.Identity(4),
+                    parent_matrix_local=rest[bone.parent.name] if bone.parent else Matrix.Identity(4), invert=True)
+                location, rotation, scale = basis.decompose()
+                if bone.name in previous and rotation.dot(previous[bone.name]) < 0:
+                    rotation.negate()
+                previous[bone.name] = rotation.copy()
+                offset = frame * 10
+                values[bone.name][offset:offset + 10] = array("f", (*location, *rotation, *scale))
                 solved[bone.name] = matrix
+            yield (.8 * (frame + 1) / frames, f"Mirroring frame {frame + 1} / {frames}")
+        # No growing destination action is evaluated during pose sampling.
+        for index, bone in enumerate(ordered):
+            write_bulk_pose_curves(rig, bone.name, values.pop(bone.name), frames)
+            yield (.8 + .2 * (index + 1) / len(ordered), f"Writing curves {index + 1} / {len(ordered)}")
         rig["mocap_clip"] = source["mocap_clip"]
         rig["mocap_frames"] = source["mocap_frames"]
         rig["mocap_mirrored"] = True
         rig["mocap_source_rig"] = source.name
-    except Exception:
+    except BaseException:
         armature = rig.data
         bpy.data.objects.remove(rig, do_unlink=True)
         if action.users == 0:
@@ -497,6 +558,78 @@ def create_mirrored_rig(context, source):
     return rig
 
 
+def create_mirrored_rig(context, source):
+    """Synchronous wrapper for background Blender and automated checks."""
+    job = iter_mirrored_rig(context, source)
+    while True:
+        try:
+            next(job)
+        except StopIteration as done:
+            return done.value
+
+
+def animation_hash_value(text):
+    text = text.strip().lower()
+    if re.fullmatch(r"hash_[0-9a-f]{8}", text):
+        return int(text[5:], 16)
+    value = 0
+    for byte in text.encode("utf-8"):
+        value = (value + byte) & 0xFFFFFFFF
+        value = (value + (value << 10)) & 0xFFFFFFFF
+        value ^= value >> 6
+    value = (value + (value << 3)) & 0xFFFFFFFF
+    value ^= value >> 11
+    return (value + (value << 15)) & 0xFFFFFFFF
+
+
+def rekey_animation_xml(xml_data, dictionary_name):
+    """Give every animation a content/dictionary-specific cache identity.
+
+    Sollumz derives Unknown1C from animation.hash. The previous exporter used
+    webcam_take_animation for BOTH variants, so both received the same cache
+    signature even though the motion and dictionary files were different.
+    Clip names stay unchanged; only internal animation IDs/references change.
+    """
+    root = ET.fromstring(xml_data)
+    animations, clips = root.find("Animations"), root.find("Clips")
+    if root.tag != "ClipDictionary" or animations is None or clips is None:
+        raise ValueError("Choose an exported GTA clip-dictionary .ycd.xml file.")
+    mapping, used_ids, used_signatures = {}, set(), set()
+    for index, animation in enumerate(animations.findall("Item")):
+        identity = animation.find("Hash")
+        if identity is None or not identity.text:
+            raise ValueError("Animation has no internal Hash; XML was not repaired.")
+        old_id = animation_hash_value(identity.text)
+        if old_id in mapping:
+            raise ValueError("Duplicate animation IDs within one dictionary; export the original rig again.")
+        canonical = ET.canonicalize(ET.tostring(animation, encoding="unicode"),
+                                   strip_text=True, exclude_tags={"Hash", "Unknown1C"})
+        salt = 0
+        while True:
+            digest = hashlib.sha256((dictionary_name.casefold() + "\0" + str(index) + "\0" +
+                                     str(salt) + "\0" + canonical).encode("utf-8")).hexdigest()
+            animation_id, signature = digest[:8], digest[8:16]
+            if animation_id not in used_ids and signature not in used_signatures and signature != "00000000":
+                break
+            salt += 1
+        used_ids.add(animation_id)
+        used_signatures.add(signature)
+        identity.text = mapping[old_id] = "hash_" + animation_id
+        signature_node = animation.find("Unknown1C")
+        if signature_node is None:
+            signature_node = ET.SubElement(animation, "Unknown1C")
+        signature_node.text = "hash_" + signature
+    if not mapping:
+        raise ValueError("The XML contains no animations.")
+    for reference in clips.iter("AnimationHash"):
+        old_id = animation_hash_value(reference.text or "")
+        if old_id not in mapping:
+            raise ValueError("Clip references an animation missing from this XML.")
+        reference.text = mapping[old_id]
+    ET.indent(root)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
 def export_xml(rig, filepath):
     if not rig or rig.type != "ARMATURE" or "mocap_clip" not in rig:
         raise ValueError("Select the rig created by the Webcam Mocap importer.")
@@ -505,11 +638,12 @@ def export_xml(rig, filepath):
     if not action:
         raise ValueError("The imported rig has no animation action.")
     name = rig["mocap_clip"]
-    dictionary, clips, animations = importer.create_clip_dictionary_template(Path(filepath).name.removesuffix(".ycd.xml"))
+    dictionary_name = Path(filepath).name.removesuffix(".ycd.xml")
+    dictionary, clips, animations = importer.create_clip_dictionary_template(dictionary_name)
     animation = importer.create_anim_obj(types.ANIMATION)
     animation.parent = animations
     props = animation.animation_properties
-    props.hash = name + "_animation"
+    props.hash = dictionary_name + "__" + name + "_animation"
     # Assign target before action: Sollumz must not reinterpret the already
     # baked local-pose curves as canonical GTA-space curves during assignment.
     if hasattr(props, "target_id"):
@@ -531,6 +665,31 @@ def export_xml(rig, filepath):
         raise RuntimeError("Sollumz rejected the export; inspect its report. The baked action is preserved.")
     if not Path(filepath).is_file() or Path(filepath).stat().st_size == 0:
         raise RuntimeError("No GTA XML file was produced.")
+    path = Path(filepath)
+    path.write_bytes(rekey_animation_xml(path.read_bytes(), dictionary_name))
+
+
+class MOCAP_OT_repair_xml(bpy.types.Operator, ImportHelper):
+    bl_idname = "import_scene.webcam_mocap_repair_xml"
+    bl_label = "Webcam Mocap: Repair Animation XML Cache IDs"
+    filename_ext = ".xml"
+    filter_glob: bpy.props.StringProperty(default="*.xml", options={"HIDDEN"})
+
+    def execute(self, context):
+        try:
+            path = Path(self.filepath)
+            if path.stat().st_size > 200_000_000:
+                raise ValueError("Animation XML is too large.")
+            repaired = rekey_animation_xml(path.read_bytes(), path.name.removesuffix(".ycd.xml"))
+            output = path.parent / "fixed" / path.name
+            output.parent.mkdir(exist_ok=True)
+            output.write_bytes(repaired)
+            self.report({"INFO"}, "Repaired XML saved: " + str(output) + ". Compile it with CodeWalker and replace the streamed YCD.")
+            return {"FINISHED"}
+        except Exception as error:
+            traceback.print_exc()
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
 
 
 class MOCAP_OT_import(bpy.types.Operator, ImportHelper):
@@ -612,6 +771,20 @@ class MOCAP_OT_export(bpy.types.Operator, ExportHelper):
             rig = resolve_target(context)
             export_xml(rig, self.filepath)
             if self.export_mirrored_copy and not rig.get("mocap_mirrored", False):
+                if not bpy.app.background:
+                    self._source_rig = rig
+                    self._mirror_rig = None
+                    self._mirror_job = iter_mirrored_rig(context, rig)
+                    self._mirror_phase = "bake"
+                    self._mirror_finished = False
+                    self._timer = None
+                    self._wm = context.window_manager
+                    self._workspace = context.workspace
+                    self._wm.progress_begin(0, 100)
+                    self._timer = self._wm.event_timer_add(.01, window=context.window)
+                    self._wm.modal_handler_add(self)
+                    self._workspace.status_text_set("Original XML saved. Preparing mirrored animation... Esc to cancel.")
+                    return {"RUNNING_MODAL"}
                 mirror = create_mirrored_rig(context, rig)
                 path = Path(self.filepath)
                 mirror_path = path.with_name(path.name.removesuffix(".ycd.xml") + "_mirrored.ycd.xml")
@@ -626,9 +799,72 @@ class MOCAP_OT_export(bpy.types.Operator, ExportHelper):
                 self.report({"INFO"}, "GTA XML exported. Compile to .ycd using CodeWalker before FiveM playback.")
             return {"FINISHED"}
         except Exception as error:
+            if hasattr(self, "_mirror_job"):
+                self._mirror_job.close()
+                self.finish_mirror_job(context)
             traceback.print_exc()
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
+
+    def finish_mirror_job(self, context):
+        if getattr(self, "_mirror_finished", False):
+            return
+        self._mirror_finished = True
+        if self._timer is not None:
+            self._wm.event_timer_remove(self._timer)
+        self._wm.progress_end()
+        self._workspace.status_text_set(None)
+        mirror = self._mirror_rig
+        if mirror is not None:
+            mirror.select_set(False)
+        self._source_rig.select_set(True)
+        context.view_layer.objects.active = self._source_rig
+
+    def modal(self, context, event):
+        if event.type == "ESC":
+            self._mirror_job.close()
+            self.finish_mirror_job(context)
+            self.report({"INFO"}, "Mirrored export cancelled. The original XML and source animation were preserved.")
+            return {"CANCELLED"}
+        # Blender's Event RNA exposes type but no timer-owner attribute.
+        # Use TIMER events to advance our bounded job; keep the Timer handle
+        # solely for removal during cleanup.
+        if event.type != "TIMER":
+            return {"RUNNING_MODAL"}
+        try:
+            if self._mirror_phase == "write":
+                path = Path(self.filepath)
+                mirror_path = path.with_name(path.name.removesuffix(".ycd.xml") + "_mirrored.ycd.xml")
+                export_xml(self._mirror_rig, str(mirror_path))
+                self.finish_mirror_job(context)
+                self.report({"INFO"}, "Original and mirrored XML exported. Compile BOTH with CodeWalker.")
+                return {"FINISHED"}
+            deadline = time.perf_counter() + .025
+            while time.perf_counter() < deadline:
+                try:
+                    progress, label = next(self._mirror_job)
+                except StopIteration as done:
+                    self._mirror_rig = done.value
+                    self._mirror_phase = "write"
+                    self._wm.progress_update(99)
+                    self._workspace.status_text_set("Writing mirrored XML with Sollumz... This final file write may pause Blender briefly.")
+                    break
+                self._wm.progress_update(progress * 98)
+                self._workspace.status_text_set(f"{label} ({progress:.0%}) - Esc to cancel mirrored export")
+            for area in context.window.screen.areas:
+                area.tag_redraw()
+            return {"RUNNING_MODAL"}
+        except Exception as error:
+            self._mirror_job.close()
+            self.finish_mirror_job(context)
+            traceback.print_exc()
+            self.report({"ERROR"}, "Mirrored export failed: " + str(error) + ". Original XML preserved.")
+            return {"CANCELLED"}
+
+    def cancel(self, context):
+        if hasattr(self, "_mirror_job"):
+            self._mirror_job.close()
+            self.finish_mirror_job(context)
 
 
 class MOCAP_OT_neutral_face(bpy.types.Operator):
@@ -669,6 +905,7 @@ class MOCAP_OT_repair_face_binding(bpy.types.Operator):
 
 def import_menu(self, context):
     self.layout.operator(MOCAP_OT_import.bl_idname)
+    self.layout.operator(MOCAP_OT_repair_xml.bl_idname)
 
 
 def export_menu(self, context):
@@ -700,7 +937,7 @@ def remove_mocap_menu_entries():
 
 def register():
     remove_mocap_menu_entries()
-    for cls in (MOCAP_OT_import, MOCAP_OT_export, MOCAP_OT_neutral_face, MOCAP_OT_repair_face_binding):
+    for cls in (MOCAP_OT_import, MOCAP_OT_export, MOCAP_OT_neutral_face, MOCAP_OT_repair_face_binding, MOCAP_OT_repair_xml):
         prefix, suffix = cls.bl_idname.split(".", 1)
         existing = bpy.types.Operator.bl_rna_get_subclass_py(prefix.upper() + "_OT_" + suffix)
         if existing:
@@ -712,12 +949,12 @@ def register():
     bpy.types.TOPBAR_MT_file_import.append(import_menu)
     bpy.types.TOPBAR_MT_file_export.append(export_menu)
     bpy.types.VIEW3D_MT_object.append(mocap_object_menu)
-    print("Webcam Mocap importer 0.2.8 ready. File > Export > Webcam Mocap GTA XML includes a mirrored dictionary option.")
+    print("Webcam Mocap importer 0.2.11 ready. Mirrored export uses a cancellable bulk bake with status-bar progress.")
 
 
 def unregister():
     remove_mocap_menu_entries()
-    for cls in (MOCAP_OT_repair_face_binding, MOCAP_OT_neutral_face, MOCAP_OT_export, MOCAP_OT_import):
+    for cls in (MOCAP_OT_repair_xml, MOCAP_OT_repair_face_binding, MOCAP_OT_neutral_face, MOCAP_OT_export, MOCAP_OT_import):
         prefix, suffix = cls.bl_idname.split(".", 1)
         existing = bpy.types.Operator.bl_rna_get_subclass_py(prefix.upper() + "_OT_" + suffix)
         if existing:

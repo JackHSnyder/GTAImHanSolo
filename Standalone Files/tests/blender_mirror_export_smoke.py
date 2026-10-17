@@ -37,7 +37,11 @@ for path in (original, mirrored):
     assert root.find("Animations/Item") is not None
     roots.append(root)
 assert original.read_bytes() != mirrored.read_bytes(), "Mirrored export is identical to original"
-for field in ("Hash", "Name", "Duration"):
+for field in ("Hash", "Unknown1C"):
+    assert roots[0].findtext('Animations/Item/' + field) != roots[1].findtext('Animations/Item/' + field), 'Original/mirror cache identity collision: ' + field
+for root in roots:
+    assert root.findtext('Clips/Item/AnimationHash') == root.findtext('Animations/Item/Hash')
+for field in ("Hash", "Name", "EndTime"):
     a, b = (root.find("Clips/Item/" + field) for root in roots)
     assert a is not None and b is not None
     assert ET.tostring(a) == ET.tostring(b), "Mirroring changes clip " + field

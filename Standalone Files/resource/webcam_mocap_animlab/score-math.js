@@ -26,6 +26,16 @@
     }
     return result;
   }
+  // The dancer faces the viewer. A mirrored camera shows the viewer's right
+  // hand on screen-right, opposite the dancer's anatomical right. Reflect
+  // horizontal offsets AND exchange hand identities to match the visible
+  // pose. Height and depth stay body-relative; tracking packets are immutable.
+  function handsForView(live,mirrored=true) {
+    if(!live)return null;
+    if(!mirrored)return live;
+    const reflect=p=>vec(p)?[-p[0],p[1],p[2]]:null;
+    return {left:reflect(live.right),right:reflect(live.left)};
+  }
   function compare(live,target) {
     if(!live||!target||!['left','right'].every(k=>vec(live[k])&&vec(target[k])))return null;
     const errors=['left','right'].map(k=>Math.hypot(...sub(live[k],target[k])));
@@ -53,7 +63,7 @@
     round.total+=match.points;round.samples++;round.lastPoints=match.points;round.status='scored';
     return true;
   }
-  const api={relativeHands,compare,newRound,sample,timing};
+  const api={relativeHands,handsForView,compare,newRound,sample,timing};
   root.MocapScore=api;
   if(typeof module!=='undefined')module.exports=api;
 })(globalThis);

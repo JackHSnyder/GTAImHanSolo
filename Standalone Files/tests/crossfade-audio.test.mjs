@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-const {makeLoop,CrossfadeBackground}=createRequire(import.meta.url)('../resource/webcam_mocap_animlab/hud/crossfade-audio.js');
+const {makeLoop,CrossfadeBackground,DecodedAnimation}=createRequire(import.meta.url)('../resource/webcam_mocap_animlab/hud/crossfade-audio.js');
 function buffer(channels,length,rate) {
   const data=Array.from({length:channels},()=>new Float32Array(length));
   return {numberOfChannels:channels,length,sampleRate:rate,duration:length/rate,getChannelData:i=>data[i]};
@@ -46,4 +46,47 @@ test('changing overlap rebuilds the actual audio buffer and reports the amount a
   assert.equal(player.snapshot().requestedCrossfadeSeconds,2);assert.equal(player.snapshot().crossfadeSeconds,2);
   assert.equal(player.snapshot().sourceSeconds,10);assert.equal(player.snapshot().loopSeconds,8);
   assert.equal(ctx.sources.at(-1).buffer.duration,8);player.pause(true);
+});
+
+test('decoded animation plays once on the audio clock without heartbeat seeks, caches decoding and restarts only for a new session',async()=>{
+  const ctx=context();let now=0,loads=0;
+  const player=new DecodedAnimation({contextFactory:()=>ctx,now:()=>now,fetchAudio:async()=>{loads++;return {ok:true,arrayBuffer:async()=>new ArrayBuffer(1)};}});
+  player.setTrack('animation.ogg',.7,0,100);await new Promise(setImmediate);
+  assert.equal(ctx.sources.length,1);assert.equal(ctx.sources[0].loop,false);assert.equal(ctx.sources[0].buffer.duration,10);
+  ctx.currentTime=1;now=1000;
+  for(let seconds=1;seconds<9;seconds++)player.setTrack('animation.ogg',.6,seconds,100);
+  assert.equal(ctx.sources.length,1);assert.equal(player.position(),1);assert.equal(ctx.sources[0].offset,0);
+  assert.equal(player.snapshot().starts,1);assert.equal(player.snapshot().stops,0);assert.equal(player.snapshot().sessionChanges,1);
+  assert.equal(ctx.gains[0].volume,.6);
+  ctx.currentTime=10;ctx.sources[0].onended();player.setTrack('animation.ogg',.6,10,100);
+  assert.equal(player.snapshot().ended,true);assert.equal(ctx.sources.length,1,'ended track stays ended');
+  player.setTrack('animation.ogg',.7,0,200);await new Promise(setImmediate);
+  assert.equal(loads,1);assert.equal(ctx.sources.length,2);assert.equal(ctx.sources[1].offset,0);
+  player.pause(true);assert.equal(ctx.sources[1].stopped,true);assert.equal(player.snapshot().paused,true);
+  assert.equal(player.snapshot().starts,2);assert.equal(player.snapshot().stops,1);assert.equal(player.snapshot().naturalEnds,1);
+});
+
+test('animation startup accounts for decode delay, uses latest timing and cancels stale pending playback',async()=>{
+  const ctx=context();let now=0,release;
+  const player=new DecodedAnimation({contextFactory:()=>ctx,now:()=>now,fetchAudio:()=>new Promise(resolve=>release=resolve)});
+  player.setTrack('slow.ogg',.7,0,1);now=750;player.setTrack('slow.ogg',.7,.75,1);now=1000;
+  release({ok:true,arrayBuffer:async()=>new ArrayBuffer(1)});await new Promise(setImmediate);
+  assert.equal(ctx.sources[0].offset,1,'start at correct position rather than playing late from zero');
+  player.setTrack('cancel.ogg',.7,0,2);player.pause(true);
+  release({ok:true,arrayBuffer:async()=>new ArrayBuffer(1)});await new Promise(setImmediate);
+  assert.equal(ctx.sources.length,1,'cancelled decode never starts late');
+  player.setTrack('slow.ogg',.7,11,3);await new Promise(setImmediate);
+  assert.equal(ctx.sources.length,1,'a startup after the file has ended does not replay it');
+  assert.equal(player.snapshot().ended,true);
+});
+
+test('animation decoding failures are reported and retries are throttled',async()=>{
+  const ctx=context(),errors=[];let now=0,loads=0;
+  const player=new DecodedAnimation({contextFactory:()=>ctx,now:()=>now,onError:text=>errors.push(text),
+    fetchAudio:async()=>{loads++;return {ok:false,status:404};}});
+  player.setTrack('missing.ogg',.7,0,1);await new Promise(setImmediate);
+  for(let i=0;i<20;i++)player.setTrack('missing.ogg',.7,i/20,1);
+  assert.equal(loads,1);assert.match(errors[0],/HTTP 404/);
+  now=2000;player.setTrack('missing.ogg',.7,2,1);await new Promise(setImmediate);assert.equal(loads,2);
+  player.pause(true);
 });

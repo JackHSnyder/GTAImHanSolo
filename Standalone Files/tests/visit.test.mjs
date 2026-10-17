@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
-async function room({smallFloor=false,missingClip=false,mirror=false,missingDictionaries=new Set(),cameraFail=false,vehicle=false,pending=false,missingHud=false,scoringBones=false,worldFeet=false,synchronized=false,anchoredBones=false,sceneFailAt=0,sceneNeverStarts=false,groundFeet=true,delay=0,startDelay=0,duration=2,kvp=new Map(),missingModels=new Set(),nonHumanoid=false,boneReadyAfter=0,actualClub=false,collisionFail=false,clubInitiallyActive=true,initialProps=[],refreshDelay=0,placementFlagFalse=false}={}) {
+async function room({smallFloor=false,missingClip=false,mirror=false,mirrorHeading=undefined,missingDictionaries=new Set(),cameraFail=false,vehicle=false,pending=false,missingHud=false,scoringBones=false,scoringHandOffsets={},worldFeet=false,synchronized=false,anchoredBones=false,sceneFailAt=0,sceneNeverStarts=false,groundFeet=true,delay=0,startDelay=0,duration=2,kvp=new Map(),missingModels=new Set(),nonHumanoid=false,boneReadyAfter=0,actualClub=false,collisionFail=false,clubInitiallyActive=true,initialProps=[],refreshDelay=0,placementFlagFalse=false}={}) {
   const net={},events={},commands={},calls=[],positions=new Map([[10,[100,200,30]]]);
   const frozen=new Map([[10,false]]),headings=new Map([[10,42]]),entities=new Set([10]);
   let tick,clock=1000,playing=false,phase=0,started=0;const timers=[];
@@ -15,7 +15,7 @@ async function room({smallFloor=false,missingClip=false,mirror=false,missingDict
   const log=name=>(...args)=>calls.push([name,...args]);
   const sandbox={console:{log:log('message')},PoseProtocol:require('../resource/webcam_mocap_animlab/protocol.js'),
     MocapScore:require('../resource/webcam_mocap_animlab/score-math.js'),
-    MocapLabConfig:{mirrorRecordedAnimation:mirror,groundRecordedFeet:groundFeet,scoringDelaySeconds:delay,animationStartDelaySeconds:startDelay,nightclub:actualClub?{}:{x:0,y:0,floor:1000,heading:0},music:{backgroundFile:'background.ogg',animationFile:'animation.mp3',backgroundVolume:.35,animationVolume:.7}},
+    MocapLabConfig:{mirrorRecordedAnimation:mirror,mirroredAnimationHeadingOffsetDegrees:mirrorHeading,groundRecordedFeet:groundFeet,scoringDelaySeconds:delay,animationStartDelaySeconds:startDelay,nightclub:actualClub?{}:{x:0,y:0,floor:1000,heading:0},music:{backgroundFile:'background.ogg',animationFile:'animation.mp3',backgroundVolume:.35,animationVolume:.7}},
     GetResourceKvpString:key=>kvp.get(key)||null,SetResourceKvp:(key,value)=>kvp.set(key,value),DeleteResourceKvp:key=>kvp.delete(key),
     SendNuiMessage:text=>calls.push(['hud',JSON.parse(text)]),
     RegisterNuiCallbackType() {},
@@ -53,7 +53,7 @@ async function room({smallFloor=false,missingClip=false,mirror=false,missingDict
     ClonePed:()=>{const id=nextPed++;entities.add(id);positions.set(id,[...positions.get(10)]);models.set(id,'player clone');return id;},
     CreatePed:(_type,name,x,y,z)=>{const id=nextPed++;entities.add(id);positions.set(id,[x,y,z]);models.set(id,name);return id;},
     GetPedBoneCoords:(id,bone)=>{
-      const offsets={45509:[-.2,0,.5],40269:[.2,0,.5],61163:[-.45,0,.5],28252:[.45,0,.5],18905:[-.7,0,.5],57005:[.7,0,.5],58271:[-.1,0,0],51826:[.1,0,0]};
+      const offsets={45509:[-.2,0,.5],40269:[.2,0,.5],61163:[-.45,0,.5],28252:[.45,0,.5],18905:[-.7,0,.5],57005:[.7,0,.5],58271:[-.1,0,0],51826:[.1,0,0],...scoringHandOffsets};
       const offset=scoringBones?offsets[bone]:null;
       const origin=anchoredBones&&animationAnchors.has(id)?animationAnchors.get(id):positions.get(id);
       return origin.map((n,i)=>n+(offset?offset[i]:i===2?bone===31086?.7:-.95:0)+(i===2?(bone===14201?footLift[0]:bone===52301?footLift[1]:0):0));
@@ -202,7 +202,32 @@ test('visit awards once per second, ignores stale camera data and retains the fi
   assert.equal(message.score.total,100);assert.equal(message.score.skipped,1);assert.equal(message.score.finished,true);
   h.net['webcam_mocap_animlab:stop']();assert.equal(h.calls.filter(c=>c[0]==='hud').at(-1)[1].scoreVisible,false);
 });
-test('warmup plays continuously, counts down only at its end, then waits one more second to score',async()=>{
+test('visit scores asymmetric onscreen copying for either animation dictionary and follows the HUD mirror toggle',async()=>{
+  const math=require('../resource/webcam_mocap_animlab/score-math.js');
+  const handOffsets={18905:[-.65,0,1],57005:[.2,0,.25]};
+  const target=math.relativeHands({leftShoulder:[-.2,0,.5],rightShoulder:[.2,0,.5],hips:[0,0,0],
+    leftElbow:[-.45,0,.5],rightElbow:[.45,0,.5],leftHand:handOffsets[18905],rightHand:handOffsets[57005]});
+  const onscreen={left:[-target.right[0],target.right[1],target.right[2]],right:[-target.left[0],target.left[1],target.left[2]]};
+  for(const mirror of [false,true]) {
+    const h=await room({mirror,scoringBones:true,scoringHandOffsets:handOffsets,duration:6});
+    await h.net['webcam_mocap_animlab:visit']('webcam_recording','webcam_take');
+    h.positions.set(10,[0,1.5,1001]);h.tick();await h.flush();
+    const targets=Object.fromEntries(['leftHand','rightHand','head','leftFoot','rightFoot'].map(n=>[n,{x:0,y:0,z:0,confidence:1}]));
+    let seq=0;
+    const step=hands=>{
+      h.advance(1000);h.net['webcam_mocap_animlab:pose']({v:1,seq:++seq,tracked:true,targets,handMatch:hands});h.tick();
+      return h.calls.filter(c=>c[0]==='hud').at(-1)[1];
+    };
+    assert.equal(step(onscreen).score.total,100,'copy visible pose regardless of selected animation variant');
+    const afterWrong=step(target).score.total;
+    assert.ok(afterWrong<200,'copying anatomical sides is not a maximum-score pose');
+    h.commands.mocaplabhud(0,['mirror']);
+    assert.equal(step(target).score.total,afterWrong+100,'unmirrored live feed uses direct hand correspondence');
+    h.net['webcam_mocap_animlab:stop']();
+  }
+});
+
+test('warmup plays continuously, counts down only for delays above three seconds, then waits one more second to score',async()=>{
   const h=await room({scoringBones:true,delay:5,duration:8});
   await h.net['webcam_mocap_animlab:visit']('webcam_recording','webcam_take');
   const targets=Object.fromEntries(['leftHand','rightHand','head','leftFoot','rightFoot'].map(n=>[n,{x:0,y:0,z:0,confidence:1}]));
@@ -414,6 +439,22 @@ test('music diagnostics report resource files and UI status; standalone tests ti
   h.events['__cfx_nui:mocapMusicStatus']({kind:'error',track:'background:background.ogg',detail:'audio decoding failed'},()=>acknowledged=true);
   assert.equal(acknowledged,true);
   assert.match(h.calls.filter(c=>c[0]==='message').at(-1)[1],/audio decoding failed/);
+});
+
+test('audio diagnostic tests swap files between playback backends without changing configuration or normal visits',async()=>{
+  const h=await room();await h.net['webcam_mocap_animlab:visit']('webcam_recording','webcam_take');h.tick();
+  const music=()=>h.calls.filter(c=>c[0]==='hud').at(-1)[1].music;
+  h.commands.mocaplabmusic(0,['test','animation-loop']);
+  assert.equal(music().mode,'background');assert.equal(music().file,'animation.mp3');assert.equal(music().crossfadeSeconds,0);
+  h.commands.mocaplabmusic(0,['test','background-once']);
+  assert.equal(music().mode,'animation');assert.equal(music().file,'background.ogg');assert.equal(music().seconds,0);
+  h.commands.mocaplabmusic(0,['stop']);assert.equal(music().mode,'background');assert.equal(music().file,'background.ogg');
+  h.commands.mocaplabmusic(0,['test','animation-loop']);h.advance(10001);h.tick();
+  assert.equal(music().file,'background.ogg');assert.equal(music().crossfadeSeconds,.2);
+  h.events['__cfx_nui:mocapMusicStatus']({kind:'status',version:'test',backend:'decoded-animation',starts:3,stops:2,
+    audioClock:5,diagnostics:{session:123,messages:10,changes:3,watchdogStops:1,messageAgeMs:10,history:['heartbeat timeout']}},()=>{});
+  assert.ok(h.calls.some(c=>c[0]==='message'&&c[1].includes('source starts 3, stops 2')));
+  assert.ok(h.calls.some(c=>c[0]==='message'&&c[1].includes('Music recent events: heartbeat timeout')));
 });
 
 test('After Hours visit uses world floor, oriented dancer/camera offsets and calm-to-performance lighting, then restores interior state',async()=>{
@@ -723,12 +764,67 @@ test('mirroring selects the alternate dictionary once for all dancers while reta
   }
 });
 
+test('mirrored facing correction rotates all playback actors, survives grounding, and restores stage headings',async()=>{
+  for(const synchronized of [false,true])for(const groundFeet of [false,true]) {
+    for(const [mirror,mirrorHeading,expected] of [[true,undefined,180],[false,undefined,0],[true,0,0],[true,-90,270],[true,NaN,180]]) {
+      const h=await room({synchronized,groundFeet,mirror,mirrorHeading});
+      await h.net['webcam_mocap_animlab:visit']('webcam_recording','webcam_take');
+      const base=new Map([...h.headings].filter(([id])=>id!==10));
+      h.positions.set(10,[0,1.5,1001]);h.tick();await h.flush();h.tick();
+      if(synchronized) {
+        const scenes=h.calls.filter(c=>c[0]==='createScene');
+        assert.equal(scenes.length,3);
+        assert.ok(scenes.every(c=>c[5]===expected));
+        assert.ok(h.calls.filter(c=>c[0]==='sceneOrigin').every(c=>c[5]===expected),'grounding keeps corrected scene heading');
+      } else {
+        assert.equal(base.size,3);
+        for(const [id,heading] of base)assert.equal(h.headings.get(id),(heading+expected)%360);
+      }
+      h.commands.mocaplabplayinfo();
+      assert.ok(h.calls.some(c=>c[0]==='message'&&c[1].includes(`facing correction: ${expected===270?-90:expected}°`)));
+      h.advance(2100);h.tick();
+      for(const [id,heading] of base)assert.equal(h.headings.get(id),heading,'return to stage heading after round');
+      h.positions.set(10,[0,3.5,1001]);h.tick();h.positions.set(10,[0,1.4,1001]);h.tick();await h.flush();
+      if(synchronized)assert.ok(h.calls.filter(c=>c[0]==='createScene').every(c=>c[5]===expected),'replay must not accumulate rotations');
+      else for(const [id,heading] of base)assert.equal(h.headings.get(id),(heading+expected)%360);
+      h.net['webcam_mocap_animlab:stop']();
+    }
+  }
+});
+
 test('missing mirrored dictionary explains the export requirement and restores the player safely',async()=>{
   const h=await room({mirror:true,missingDictionaries:new Set(['webcam_recording_mirrored'])});
   await h.net['webcam_mocap_animlab:visit']('webcam_recording','webcam_take');
   assert.deepEqual(h.positions.get(10),[100,200,30]);assert.equal(h.frozen.get(10),false);
   assert.ok(h.calls.some(c=>c[0]==='message'&&c[1].includes('mirrorRecordedAnimation: false')));
   assert.equal(h.calls.filter(c=>c[0]==='play'||c[0]==='scenePlay').length,0);
+});
+
+test('mirror command reveals incorrectly typed config and forces the next visit without changing an existing round',async()=>{
+  const h=await room({synchronized:true,mirror:'true'});
+  h.commands.mocaplabmirror(0,['status']);
+  assert.ok(h.calls.some(c=>c[0]==='message'&&c[1].includes('"true" (string); effective: OFF')));
+  assert.ok(h.calls.some(c=>c[0]==='message'&&c[1].includes('without quotation marks')));
+  h.commands.mocaplabmirror(0,['on']);
+  await h.net['webcam_mocap_animlab:visit']('webcam_recording','webcam_take');
+  h.commands.mocaplabmirror(0,['off']);
+  h.positions.set(10,[0,1.5,1001]);h.tick();await h.flush();h.tick();
+  assert.ok(h.calls.filter(c=>c[0]==='scenePlay').every(c=>c[3]==='webcam_recording_mirrored'),'visit retains dictionary chosen on entry');
+  h.net['webcam_mocap_animlab:stop']();
+  h.calls.length=0;await h.net['webcam_mocap_animlab:visit']('webcam_recording','webcam_take');
+  h.positions.set(10,[0,1.5,1001]);h.tick();await h.flush();h.tick();
+  assert.ok(h.calls.filter(c=>c[0]==='scenePlay').every(c=>c[3]==='webcam_recording'));
+  h.net['webcam_mocap_animlab:stop']();
+});
+
+test('mirror temporary overrides reset to boolean config and never silently use a misspelled asset',async()=>{
+  const h=await room({mirror:true,missingDictionaries:new Set(['webcam_recording_mirrored'])});
+  h.commands.mocaplabmirror(0,['off']);h.commands.mocaplabmirror(0,['config']);
+  assert.ok(h.calls.some(c=>c[0]==='message'&&c[1].includes('true (boolean); effective: ON (config)')));
+  await h.net['webcam_mocap_animlab:visit']('webcam_recording','webcam_take');
+  assert.ok(h.calls.some(c=>c[0]==='message'&&c[1].includes('webcam_recording_mirrored.ycd')&&c[1].includes('_mirrord.ycd')));
+  const fresh=await room({mirror:false});fresh.commands.mocaplabmirror(0,['status']);
+  assert.ok(fresh.calls.some(c=>c[0]==='message'&&c[1].includes('effective: OFF (config)')));
 });
 
 test('visit server command checks ACE, validates clip names and requires no webcam pairing',async()=>{

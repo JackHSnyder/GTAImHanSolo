@@ -119,7 +119,7 @@ async function loadVisitClub(s) {
 }
 let lastClubFailure='';
 function clubStatus(s) {
-  return `Nightclub client 0.3.23: interior ${s.interior||0}; valid: ${!!s.interior&&IsValidInterior(s.interior)}; ready: ${!!s.interior&&IsInteriorReady(s.interior)}; IPL active: ${IsIplActive(clubIpl)}; collision loaded: ${HasCollisionLoadedAroundEntity(s.player)}; loading: ${s.loading}; recovering: ${s.clubMissingSince!==undefined}.`;
+  return `Nightclub client 0.3.26: interior ${s.interior||0}; valid: ${!!s.interior&&IsValidInterior(s.interior)}; ready: ${!!s.interior&&IsInteriorReady(s.interior)}; IPL active: ${IsIplActive(clubIpl)}; collision loaded: ${HasCollisionLoadedAroundEntity(s.player)}; loading: ${s.loading}; recovering: ${s.clubMissingSince!==undefined}.`;
 }
 function saveClubFailure(s,reason) {
   lastClubFailure=`Last nightclub failure: ${reason}. ${clubStatus(s)}`;
@@ -394,7 +394,7 @@ RegisterCommand('mocaplabmusic',(_source,args)=>{
     notice(`Music ${track}: audio/${file||'(disabled)'}; ${content?'file found':'FILE MISSING or disabled'}; header: ${format}; volume: ${config[`${track}Volume`]}.`);
   }
   const hudSource=LoadResourceFile(resource,'hud/hud.js')||'';
-  notice(`Music client 0.3.23; HUD ready: ${hudReady}; mode: ${hudMusicMode}; requested crossfade: ${config.backgroundCrossfadeSeconds}s (${crossfadeOverride===null?'config':'saved override'}); bundled crossfade: ${hudSource.includes('MOCAP_CROSSFADE_BUNDLED')?'found':'MISSING / older HUD'}. Waiting for audio UI status…`);
+  notice(`Music client 0.3.26; HUD ready: ${hudReady}; mode: ${hudMusicMode}; requested crossfade: ${config.backgroundCrossfadeSeconds}s (${crossfadeOverride===null?'config':'saved override'}); bundled crossfade: ${hudSource.includes('MOCAP_CROSSFADE_BUNDLED')?'found':'MISSING / older HUD'}. Waiting for audio UI status…`);
   SendNuiMessage(JSON.stringify({type:'mocapMusicQuery'}));
 },false);
 RegisterNuiCallbackType('mocapHudReady');
@@ -451,11 +451,11 @@ RegisterCommand('mocaplabhud',(_source,args)=>{
     const resource=GetCurrentResourceName();
     const missing=['hud/index.html','hud/hud.css','hud/hud.js'].filter(file=>!LoadResourceFile(resource,file));
     const uiPage=GetResourceMetadata(resource,'ui_page',0)||'MISSING';
-    return notice(`HUD client 0.3.23 | ui_page: ${uiPage} | missing files: ${missing.join(', ')||'none'} | page ready: ${hudReady} | panel rendered: ${hudRendered} | message accepted: ${hudLastDelivery} | scene: ${scene?.kind||mode||'none'} | camera: ${!!scene?.camera} | skeleton age: ${pose?GetGameTimer()-received+'ms':'no camera packets'}.`);
+    return notice(`HUD client 0.3.26 | ui_page: ${uiPage} | missing files: ${missing.join(', ')||'none'} | page ready: ${hudReady} | panel rendered: ${hudRendered} | message accepted: ${hudLastDelivery} | scene: ${scene?.kind||mode||'none'} | camera: ${!!scene?.camera} | skeleton age: ${pose?GetGameTimer()-received+'ms':'no camera packets'}.`);
   }
   if(args[0]!=='mirror')return notice('Use /mocaplabhud test, /mocaplabhud status, or /mocaplabhud mirror.');
   hudMirrored=!hudMirrored;updateComparisonHud(true);
-  notice(`Skeleton HUD: ${hudMirrored?'mirrored':'camera'} view.`);
+  notice(`Skeleton HUD: ${hudMirrored?'mirrored':'camera'} view. Scoring follows this view's left/right direction.`);
 },false);
 const notice = text => {
   console.log(`[webcam_mocap_animlab] ${text}`);
@@ -467,6 +467,7 @@ const BODY_CLIP={dict:'move_crouch_proto',clip:'idle_intro',phaseStart:0.03,phas
   smoothingSeconds:0.14,holdMs:350,fadeMs:650};
 let bodyAnimation=null;
 let recordedPlayback=null,recordedLoad=0;
+let mirrorOverride=null;
 let groundingOverride=null,lastGroundingReport='No recorded grounding samples yet.';
 function recordedPhase(r) {
   const actor=r.stageActors?.find(actor=>actor.ped===r.ped);
@@ -510,7 +511,7 @@ RegisterCommand('mocaplabground',(_source,args)=>{
     if(r?.stageActors)configureGrounding(r,groundingOverride);
     notice(`Recorded foot grounding ${groundingOverride?'enabled':'disabled'} until resource restart.`);
   } else if(args.length&&args[0]!=='status')return notice('Use /mocaplabground on, off, or status.');
-  notice(`Grounding client 0.3.23; active: ${!!r?.grounding}; ${lastGroundingReport}`);
+  notice(`Grounding client 0.3.26; active: ${!!r?.grounding}; ${lastGroundingReport}`);
 },false);
 function stopRecordedPlayback() {
   recordedLoad++;
@@ -526,10 +527,10 @@ function stopRecordedPlayback() {
       SetSynchronizedSceneHoldLastFrame(actor.syncId,false);
       SetSynchronizedScenePhase(actor.syncId,1);SetSynchronizedSceneRate(actor.syncId,1);
     }
-    if(DoesEntityExist(actor.ped)&&(actor.syncId!==undefined||old.grounding)) {
+    if(DoesEntityExist(actor.ped)&&(actor.syncId!==undefined||old.grounding||old.headingOffset)) {
       ClearPedTasksImmediately(actor.ped);
       SetEntityCoordsNoOffset(actor.ped,...actor.base,false,false,false);
-      SetEntityHeading(actor.ped,actor.heading);
+      SetEntityHeading(actor.ped,actor.baseHeading);
       FreezeEntityPosition(actor.ped,actor.wasFrozen);
     }
   }
@@ -575,7 +576,9 @@ RegisterCommand('mocaplabplay',async (_source,args)=>{
   await playRecording(dict,clip);
 },false);
 async function playRecording(dict,clip) {
-  dict=recordedDictionary(dict);
+  // A visit captures its dictionary at entry, including mirror selection.
+  // Changing the diagnostic override must not replace a pending/active visit.
+  if(mode!=='visit')dict=recordedDictionary(dict);
   stopRecordedPlayback();
   const request=recordedLoad,ped=preview;
   recordedPlayback={dict,clip,ped};
@@ -607,8 +610,11 @@ async function playRecording(dict,clip) {
     typeof GetSynchronizedScenePhase==='function'&&typeof SetSynchronizedSceneRate==='function'&&
     typeof SetSynchronizedSceneLooped==='function'&&typeof SetSynchronizedSceneHoldLastFrame==='function';
   const floor=(scene?.stage||ROOM).floor+.04;
+  const headingOffset=recordedHeadingOffset(dict);
+  recordedPlayback.headingOffset=headingOffset;
   const actors=recordedPlayback.stageActors=[ped,...dancers].filter(actor=>DoesEntityExist(actor)).map(actor=>({
-    ped:actor,base:[...GetEntityCoords(actor,false)],heading:GetEntityHeading(actor),
+    ped:actor,base:[...GetEntityCoords(actor,false)],baseHeading:GetEntityHeading(actor),
+    heading:((GetEntityHeading(actor)+headingOffset)%360+360)%360,
     wasFrozen:!!IsEntityPositionFrozen(actor),floor}));
   try {
     for(const actor of actors) {
@@ -619,7 +625,10 @@ async function playRecording(dict,clip) {
         SetSynchronizedSceneLooped(id,false);SetSynchronizedSceneHoldLastFrame(id,true);
         FreezeEntityPosition(actor.ped,false);
         TaskSynchronizedScene(actor.ped,id,dict,clip,8,-8,0,0,1000,0);
-      } else TaskPlayAnim(actor.ped,dict,clip,8,-8,-1,flags,0,false,false,false);
+      } else {
+        if(headingOffset)SetEntityHeading(actor.ped,actor.heading);
+        TaskPlayAnim(actor.ped,dict,clip,8,-8,-1,flags,0,false,false,false);
+      }
     }
   } catch(error) {
     stopRecordedPlayback();notice(`Recorded playback failed: ${error.message}`);return;
@@ -655,14 +664,34 @@ RegisterCommand('mocaplabplayinfo',()=>{
   const r=recordedPlayback;
   if(!r)return notice('No recorded animation is active.');
   const duration=GetAnimDuration(r.dict,r.clip),phase=recordedPhase(r);
-  notice(`Recorded playback: ${r.dict} / ${r.clip} · duration ${duration.toFixed(3)}s · position ${(phase*100).toFixed(1)}% · playing ${!!IsEntityPlayingAnim(r.ped,r.dict,r.clip,3)} · grounded feet: ${!!r.grounding}.`);
+  notice(`Recorded playback: ${r.dict} / ${r.clip} · duration ${duration.toFixed(3)}s · position ${(phase*100).toFixed(1)}% · playing ${!!IsEntityPlayingAnim(r.ped,r.dict,r.clip,3)} · grounded feet: ${!!r.grounding} · facing correction: ${r.headingOffset??0}°.`);
 },false);
+function recordedHeadingOffset(dict) {
+  // Use the actual selected asset; a visit retains its selection until exit.
+  if(!dict.toLowerCase().endsWith('_mirrored'))return 0;
+  const value=globalThis.MocapLabConfig?.mirroredAnimationHeadingOffsetDegrees;
+  return typeof value==='number'&&Number.isFinite(value)?value%360:180;
+}
 function recordedDictionary(dict) {
-  return globalThis.MocapLabConfig?.mirrorRecordedAnimation===true&&!dict.endsWith('_mirrored')?dict+'_mirrored':dict;
+  return recordedMirrorEnabled()&&!dict.toLowerCase().endsWith('_mirrored')?dict+'_mirrored':dict;
+}
+function recordedMirrorEnabled() {
+  return mirrorOverride??(globalThis.MocapLabConfig?.mirrorRecordedAnimation===true);
 }
 function recordedClipMissing(dict) {
-  return `Recorded clip unavailable in ${dict}. ${globalThis.MocapLabConfig?.mirrorRecordedAnimation===true?'Export and compile the mirrored dictionary, install it in stream, or set mirrorRecordedAnimation: false.':'Compile the .ycd.xml to .ycd and put it in stream.'} Restart the resource after installing it.`;
+  return `Recorded clip unavailable in ${dict}. ${dict.toLowerCase().endsWith('_mirrored')?'Install the correctly spelled '+dict+'.ycd in stream (not _mirrord.ycd), or set mirrorRecordedAnimation: false and use /mocaplabmirror config.':'Compile the .ycd.xml to .ycd and put it in stream.'} Restart the resource after installing it.`;
 }
+RegisterCommand('mocaplabmirror',(_source,args)=>{
+  if(args.length===1&&['on','off','config','reset'].includes(args[0])) {
+    mirrorOverride=args[0]==='on'?true:args[0]==='off'?false:null;
+    notice(`Mirror ${mirrorOverride===null?'config restored':(mirrorOverride?'ON':'OFF')+' until resource restart'}. Applies to your next visit; exit and enter again to change the current visit.`);
+  } else if(args.length&&!(args.length===1&&args[0]==='status'))
+    return notice('Use /mocaplabmirror on, off, config, or status.');
+  const raw=globalThis.MocapLabConfig?.mirrorRecordedAnimation;
+  notice(`Mirror client 0.3.26; loaded mirrorRecordedAnimation: ${JSON.stringify(raw)??'missing'} (${typeof raw}); effective: ${recordedMirrorEnabled()?'ON':'OFF'} (${mirrorOverride===null?'config':'temporary override'}); current visit: ${scene?.kind==='visit'?scene.dict:'none'}; current replay: ${recordedPlayback?.dict||'none'}.`);
+  if(raw==='true')notice('Config uses a string. Write mirrorRecordedAnimation: true, without quotation marks around true.');
+  notice('Default mirrored asset: stream/webcam_recording_mirrored.ycd; clip webcam_take. The suffix is _mirrored, not _mirrord.');
+},false);
 function animatedHandPositions(ped) {
   const point=bone=>GetPedBoneCoords(ped,bone,0,0,0);
   const a=point(58271),b=point(51826);
@@ -678,7 +707,7 @@ function updateRecordingScore() {
   if(timing.phase!=='scoring') {r.score.status=timing.phase;return;}
   if(Math.floor(timing.scoreSeconds+1e-5)<r.score.nextSecond)return;
   const live=GetGameTimer()-received<=250?pose?.handMatch:null;
-  ScoreMath.sample(r.score,timing.scoreSeconds,live,animatedHandPositions(r.ped));
+  ScoreMath.sample(r.score,timing.scoreSeconds,ScoreMath.handsForView(live,hudMirrored),animatedHandPositions(r.ped));
 }
 let bodyBackend='crouch', ikMode='hands';
 const CROUCH_SET='move_ped_crouched';

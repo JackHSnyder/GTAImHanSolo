@@ -78,7 +78,9 @@ test('visit music switches exclusively, resumes background, restarts replays and
   assert.equal(players.length,1,'music wait never creates or starts the animation audio');
   send({mode:'animation',file:'dance.mp3',volume:.7,seconds:0,session:100});
   const dance=players[1];assert.equal(bg.paused,true);assert.equal(dance.paused,false);assert.equal(dance.loop,false);
-  send({mode:'animation',file:'dance.mp3',volume:.7,seconds:4,session:100});assert.equal(dance.currentTime,4);
+  send({mode:'animation',file:'dance.mp3',volume:.7,seconds:4,session:100});
+  assert.equal(dance.currentTime,0,'a stalled fallback player must not be re-seeked on every heartbeat');
+  dance.currentTime=4; // Simulate normal device-clock progress.
   dance.duration=NaN;
   send({mode:'animation',file:'dance.mp3',seconds:7,session:100});
   dance.duration=60;dance.events.loadedmetadata();assert.equal(dance.currentTime,7);
@@ -116,10 +118,10 @@ test('audio playback rejection and decode errors reach FiveM diagnostics; a reje
   handlers.message({data:{type:'mocapMusicQuery'}});assert.equal(reports.at(-1)[1].kind,'status');
 });
 
-test('bundled HUD crossfade works without an external helper, and pauses for animation playback, exit and watchdog',async()=>{
-  const handlers={},sources=[],players=[];let watchdog,now=0;
+test('bundled HUD shares one audio context, reports source lifecycle and stops on exit/watchdog',async()=>{
+  const handlers={},sources=[],players=[],contexts=[],reports=[];let watchdog,now=0;
   class AudioContext {
-    constructor(){this.currentTime=0;this.state='running';this.destination={};}
+    constructor(){this.currentTime=0;this.state='running';this.destination={};contexts.push(this);}
     resume(){return Promise.resolve();}
     createBuffer(channels,length,rate){const data=Array.from({length:channels},()=>new Float32Array(length));return {numberOfChannels:channels,length,sampleRate:rate,duration:length/rate,getChannelData:i=>data[i]};}
     decodeAudioData(){return Promise.resolve(this.createBuffer(1,1000,100));}
@@ -134,7 +136,8 @@ test('bundled HUD crossfade works without an external helper, and pauses for ani
   vm.runInContext(await readFile(new URL('../resource/webcam_mocap_animlab/hud/hud.js',import.meta.url),'utf8'),vm.createContext({
     AudioContext,Audio,document:{getElementById:()=>({getContext:()=>ctx})},
     window:{addEventListener:(name,fn)=>handlers[name]=fn},performance:{now:()=>now},setInterval:fn=>watchdog=fn,
-    fetch:async()=>({ok:true,arrayBuffer:async()=>new ArrayBuffer(1)}),
+    GetParentResourceName:()=> 'webcam_mocap_animlab',
+    fetch:async(_url,options)=>{if(options)reports.push(JSON.parse(options.body));return {ok:true,arrayBuffer:async()=>new ArrayBuffer(1)};},
   }));
   const send=music=>handlers.message({data:{type:'mocapComparison',visible:false,music}});
   send({mode:'background',file:'background.ogg',volume:.35,crossfadeSeconds:2});
@@ -142,12 +145,24 @@ test('bundled HUD crossfade works without an external helper, and pauses for ani
   assert.equal(players.length,0,'background uses decoded audio even when only hud.js is loaded');
   assert.equal(sources.length,1);assert.equal(sources[0].buffer.duration,8);assert.equal(sources[0].loop,true);
   send({mode:'animation',file:'animation.ogg',volume:.7,seconds:0,session:1});
-  assert.equal(players.length,1);assert.equal(players[0].paused,false);assert.equal(sources[0].stopped,true);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(players.length,0,'animation also uses decoded Web Audio');assert.equal(sources[0].stopped,true);
+  assert.equal(sources.length,2);assert.equal(sources[1].loop,false);assert.equal(sources[1].buffer.duration,10,'animation is not shortened or crossfaded');
+  send({mode:'animation',file:'animation.ogg',volume:.7,seconds:6,session:1});
+  assert.equal(sources.length,2,'large game-time drift does not interrupt or recreate the playing source');
+  assert.equal(contexts.length,1,'background and animation must use the same audio device context');
+  contexts[0].currentTime=3;
+  handlers.message({data:{type:'mocapMusicQuery'}});
+  const status=reports.at(-1);
+  assert.equal(status.backend,'decoded-animation');assert.equal(status.starts,1);assert.equal(status.stops,0);
+  assert.equal(status.time,3);assert.equal(status.audioClock,3);assert.equal(status.sessionChanges,1);
+  assert.equal(status.diagnostics.messages,3);assert.equal(status.diagnostics.watchdogStops,0);
   send({mode:'background',file:'background.ogg',volume:.35,crossfadeSeconds:2});
-  await new Promise(resolve=>setImmediate(resolve));assert.equal(players[0].paused,true);assert.equal(sources.length,2);
-  now=2000;watchdog();assert.equal(sources[1].stopped,true);
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(sources[1].stopped,true);assert.equal(sources.length,3);
+  now=2000;watchdog();assert.equal(sources[2].stopped,true);
+  handlers.message({data:{type:'mocapMusicQuery'}});assert.equal(reports.at(-1).diagnostics.watchdogStops,1);
   send({mode:'background',file:'background.ogg',volume:.35,crossfadeSeconds:2});
-  await new Promise(resolve=>setImmediate(resolve));handlers.pagehide();assert.equal(sources[2].stopped,true);
+  await new Promise(resolve=>setImmediate(resolve));handlers.pagehide();assert.equal(sources[3].stopped,true);
 });
 
 test('the shipped HUD bundle includes its canonical crossfade engine and needs no separate browser script',async()=>{

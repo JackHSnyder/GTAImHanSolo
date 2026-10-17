@@ -1,5 +1,76 @@
 # Record now, play in GTA later
 
+## Blender timer event fix (tool 0.2.11)
+
+The 0.2.10 progress handler incorrectly accessed event.timer. Blender Event exposes event.type but no timer attribute, so the mirror job could fail on its first timer event after the original XML was saved. The handler now checks only event.type == TIMER and retains its WindowManager Timer handle solely for cleanup. The bounded bake, progress reporting and Esc cancellation are unchanged.
+
+Save any scene changes and restart Blender to clear the previously failed modal job, open/run this update's tools/mocap_gta_importer.py (version 0.2.11), then retry the paired export from the original animated rig. No FiveM resource/config changes are needed.
+
+Regression coverage now uses TIMER events with NO timer property, checks non-timer events, drives completion and cancellation, and inspects actual Blender 5.2.2 Event RNA to verify the absence of that attribute. The earlier stand-in incorrectly included a timer property and concealed the bug. Eight Python importer/operator/XML checks and repeated native Blender registration/menu checks pass.
+
+## Responsive mirrored bake (Blender tool 0.2.10)
+
+The original file can finish exporting while the second mirrored bake occupies Blender's UI thread. Version 0.2.9 inserted location/quaternion/scale keys bone-by-bone on every frame and evaluated the growing destination action during sampling. Long takes were much more expensive than the original short smoke fixtures. The user was using the correct custom exporter; the earlier suggestion of a different export menu did not explain this failure.
+
+Version 0.2.10 first samples the mirrored transforms into compact float arrays, then allocates/writes F-curves in bulk. Rest-matrix inverses are cached. Constant channels use two endpoint keys, preserving full duration while avoiding millions of redundant keys; varying channels retain one key per captured frame with linear interpolation. The sampled destination action stays empty until curve assembly, avoiding repeated evaluation of growing key lists. Mirror/body/wrist/face math and unique cache IDs remain covered by the previous checks.
+
+Interactive paired export now runs mirror sampling/curve assembly in timer-driven chunks (roughly 25ms work budget per timer event, yielding between frames/bones). Watch Blender's bottom status bar for frame/curve progress. Press Esc to cancel this bake; partial generated rig/action data is removed and the source rig/action/frame plus already written original XML are preserved. The final Sollumz XML writer itself remains synchronous, is explicitly labeled as the file-writing stage, and may briefly pause the UI. Cancellation is processed between bake chunks, not during that external writer call.
+
+Download webcam-mocap-mirror-bake-performance-update.zip, open its tools/mocap_gta_importer.py in Blender's Text Editor and run it with Alt+P. Select the ORIGINAL animated rig in Object Mode and repeat File > Export > Webcam Mocap GTA XML with Also export mirrored dictionary checked. There are no FiveM resource/config/audio changes in this update. Future export files still need the usual CodeWalker compilation.
+
+Measured in local Blender 5.2.2: a synthetic 95-second (2851-frame), 231-bone fixture baked in 6.55s with 47,355 curve points and 3,082 progress yields. The actual HanSolo.blend take webcam_take_preview.003 (2851 frames, 128 bones) baked in 7.08s, producing 313,101 curve points and 2,979 yields. The user blend was read without saving or changing its file. Laptop speed and the final Sollumz export stage may differ. Modal progress/cancellation control flow is tested with stand-ins; a live interactive GUI run and actual installed Sollumz XML export were not verified locally.
+
+## Mirrored cache identity fix (Blender tool 0.2.9)
+
+The game now reports webcam_recording_mirrored / webcam_take, establishing that the mirrored dictionary is selected. The previous exporter nevertheless assigned webcam_take_animation to both variants. Sollumz derives the animation-cache signature (Unknown1C) from that value and explicitly requires uniqueness. Thus different dictionaries/motion could share a cache identity. This is a confirmed exporter defect and a plausible explanation for the reported original-looking motion; the specific user YCD has not been inspected.
+
+Version 0.2.9 namespaces the initial animation name by dictionary and then writes deterministic dictionary/content-specific internal animation hashes and Unknown1C signatures. Clip AnimationHash references are updated consistently. Public clip name webcam_take, timing, bone IDs and sequence/motion values remain unchanged. Re-exported changed content receives a new cache identity as well. There is no new FiveM resource or config setting in this fix.
+
+To repair an EXISTING mirrored XML without another bake:
+
+1. Open and run this update's tools/mocap_gta_importer.py in Blender's Text Editor (Alt+P).
+2. Choose File > Import > Webcam Mocap: Repair Animation XML Cache IDs.
+3. Select the already-exported webcam_recording_mirrored.ycd.xml. No armature selection is needed.
+4. The tool writes fixed/webcam_recording_mirrored.ycd.xml beside the original. The original is preserved.
+5. Compile the XML FROM THAT fixed FOLDER with CodeWalker. Replace the streamed webcam_recording_mirrored.ycd with the newly compiled binary.
+6. Restart webcam_mocap_animlab, reconnect to the server and visit again. Keep the existing mirror setting/command enabled. The game command still uses webcam_recording / webcam_take.
+
+For future exports, the normal File > Export > Webcam Mocap GTA XML command repairs IDs automatically for both files. If no previous XML is available, run the new script and export the pair from your existing original animated rig, then compile/install the newly generated mirrored file.
+
+The repair only addresses IDs; it cannot create mirrored motion if the chosen XML accidentally contains the original motion. If the corrected file still plays identically, inspect the mirrored rig or compare the actual two XML exports next. The standard asset suffix remains _mirrored; the latest playback output shows that correctly spelled dictionary is already loading, so file spelling is not the current diagnosis.
+
+Source: https://github.com/Sollumz/Sollumz/blob/main/ycd/ycdexport.py (animation_from_object: unique cache signature derived from animation hash). XML fields/reference format: https://github.com/dexyfex/CodeWalker/blob/master/CodeWalker.Core/GameFiles/Resources/Clip.cs
+
+## Mirror setting diagnosis (resource 0.3.24)
+
+The reported playback used webcam_recording / webcam_take, so FiveM was playing the original dictionary. With this resource's boolean mirror setting enabled on entry, it selects webcam_recording_mirrored instead. Check the installed asset spelling: webcam_recording_mirrored.ycd has an e before the final d; webcam_recording_mirrord.ycd is a different asset name and will not satisfy that request.
+
+Install client.js and fxmanifest.lua from webcam-mocap-mirror-selection-update.zip into the active server resource, then restart webcam_mocap_animlab. Use /mocaplabmirror status to print the client version, actual loaded mirrorRecordedAnimation value and its type, effective setting, and current visit/replay dictionaries. A missing/false value suggests the wrong config/key or resource copy was edited; a string value "true" must be corrected to the boolean true without quotes.
+
+For a direct test, exit the visit using /mocaplabvisit stop, run /mocaplabmirror on, then /mocaplabvisit. The temporary override lasts until resource restart and applies on entry to the next visit; it does not replace a running round. /mocaplabmirror off temporarily disables mirroring; /mocaplabmirror config (or reset) returns to the config value. During playback /mocaplabplayinfo must show webcam_recording_mirrored / webcam_take. Missing mirrored assets produce a clear filename/install error instead of silently playing the original.
+
+Blender's generated mirrored skeleton is normally named webcam_take_mirrored_preview (possibly with a numeric suffix). Search for that object in the Outliner and select it to inspect its bone motion. The existing character meshes remain bound to the original rig; watching those meshes alone does not preview the new skeleton. The immediate reported issue is game dictionary selection, so confirm that selection before re-exporting the animation.
+
+## Audio lifecycle diagnosis (resource and UI 0.3.23)
+
+The reported repeated beginning fragments persisted after the prior update; no runtime 0.3.22 backend confirmation was supplied yet. The exact laptop cause is still unknown. This update adds measurable source/session/heartbeat diagnostics instead of assuming another cause. Background and animation players now share one AudioContext so switching tracks uses the same audio device context as the working background player.
+
+Merge the supplied webcam_mocap_animlab folder from webcam-mocap-audio-diagnostics-update.zip into the installed resource, replace its client/manifest/HUD files and restart webcam_mocap_animlab. No config, audio, animation or saved-preference changes are needed.
+
+While walking in the visit area, use /mocaplabmusic test animation. While it glitches, run /mocaplabmusic status twice about two seconds apart within that ten-second test. Confirm client and UI 0.3.23 and backend decoded-animation. Paste both full outputs. They now include source starts/stops, session changes, natural audio clock, last start offset/stop reason, received messages, mode/session changes, heartbeat timeout count and the latest mode/stop events. One source start and zero stops during a continuous session indicates no script-level restart; increasing counters identify actual source replacement. A stationary audio clock despite continued messages indicates an audio-context/output issue rather than repeated script starts. These are diagnostic distinctions, not a claim about the laptop's confirmed cause.
+
+Also run /mocaplabmusic test animation-loop. This plays the configured animation file through the background player for ten seconds with zero crossfade, without changing the file or config. Report whether it sounds clean. /mocaplabmusic test background-once does the opposite: it plays the background file through the animation player. Both tests restore normal music after ten seconds or /mocaplabmusic stop. They distinguish audio-file behavior from playback-mode behavior.
+
+## Continuous animation audio (resource and audio UI 0.3.22)
+
+The laptop report showed both OGG files present, HTML animation playback ready at 4/4 with no media error, Web Audio available, and glitching even during the standalone music test. There is no forgotten animation-audio setup command. The previous player could repeatedly assign currentTime whenever its measured position was more than 0.35s behind the game timeline. On a slow or buffering player that can repeatedly interrupt playback. The telemetry does not prove that was the laptop's exact cause, but the new player removes that failure mode.
+
+Animation music now uses a decoded Web Audio buffer, like the working background backend, but plays once at the original duration with no loop overlap or crossfade. It aligns once at startup, including any elapsed decode time, then runs continuously on the audio device clock. HUD heartbeats update volume and pending startup timing but do not seek, recreate or restart an active source. New replay sessions start fresh; cancellation and scene exit cancel pending starts, and completion restores background audio. A track that ends before its animation stays silent rather than restarting. Existing signed animationStartDelaySeconds timing is preserved. Background crossfade settings are unchanged.
+
+If Web Audio is unavailable, the HTML fallback now seeks only on session start or initial metadata availability, rather than repeatedly chasing the game clock. Persistent clock drift after startup is not continuously corrected, to prioritize uninterrupted audio.
+
+Merge the webcam_mocap_animlab folder from webcam-mocap-animation-audio-update.zip into the installed resource, replacing the supplied client, manifest and HUD files. Keep config.js, your audio files and animations. Restart webcam_mocap_animlab. Run /mocaplabmusic test animation while walking in the visit area, then /mocaplabmusic status within that 10-second test. It should report Music client 0.3.22, Music UI 0.3.22 and backend: decoded-animation. No companion update or new command variable is required. If the audio still glitches with that backend, capture the full status so file decoding, context state and laptop-specific playback can be checked next.
+
 ## Saved point goal (resource 0.3.21)
 
 Use /mocaplabgoal 2500 to set and save a custom goal. It updates the current or final score HUD immediately without changing earned points, and overrides the calculated goal on every subsequent replay. /mocaplabgoal or /mocaplabgoal status shows the current setting. /mocaplabgoal reset removes the saved override and restores automatic duration-based goals.
@@ -247,7 +318,7 @@ The animation plays throughout the delay, with no points and no skipped-tracking
 
 Version 0.3.0 adds scoring to the visit minigame. Update the complete installed `webcam_mocap_animlab` resource, including `score-math.js`, `fxmanifest.lua`, `protocol.js`, client/server scripts and hud folder. Preserve your compiled YCD files in stream. Update the companion folder as well, restart START-COMPANION.cmd and refresh the website. In the server console, run `refresh` then `restart webcam_mocap_animlab`. Enter `/mocaplabvisit`, pair the website with the new visit token, and approach the model as usual. Existing animations work unchanged.
 
-Each scored second after the configured delay compares the live wrist positions to the model's current SKEL_L_Hand / SKEL_R_Hand positions. The reference is the actual animated model, not a copy of your camera pose. Each body's shoulder line and shoulder-to-hip direction establish local axes; the shoulder midpoint is the origin. Hand coordinates are divided by that side's upper-arm-plus-forearm length. This removes world location, facing and overall size from the comparison. Left matches anatomical left; changing the HUD mirror view does not change scoring.
+Each scored second after the configured delay compares the live wrist positions to the model's current SKEL_L_Hand / SKEL_R_Hand positions. The reference is the actual animated model, not a copy of your camera pose. Each body's shoulder line and shoulder-to-hip direction establish local axes; the shoulder midpoint is the origin. Hand coordinates are divided by that side's upper-arm-plus-forearm length. This removes world location, facing and overall size from the comparison. Scoring follows the displayed left/right direction. With the default mirrored live HUD, the viewer copies the dancer as seen on screen: live right matches dancer left, with horizontal body-relative offsets reflected, and vice versa. Height and depth are preserved. With the HUD mirror view disabled, live left matches dancer left directly. This is independent of the recorded mirror setting; it compares the model actually playing.
 
 Only wrist positions affect matching. Fingers, finger curl and hand rotation do not. Each hand contributes up to 50 points: `50 * max(0, 1 - normalized_position_error / 0.75)^2`; their rounded sum gives 0–100 points per valid second. Both hands plus shoulders, elbows and hips must be confidently visible. Camera data older than 250ms skips the check. Missing seconds are not backfilled using later poses. Clips under one second have no full-second checks.
 

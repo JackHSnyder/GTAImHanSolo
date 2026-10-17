@@ -6,7 +6,10 @@
 globalThis.MocapLabConfig = {
   // Select the exported _mirrored animation dictionary for all dancers.
   // First install the matching compiled *_mirrored.ycd in stream (see MIRRORING.md).
-  mirrorRecordedAnimation: false,
+  mirrorRecordedAnimation: true,
+  // Turn mirrored playback to face the camera. Normal playback is unchanged.
+  // Set 0 for mirrored files already exported facing the correct direction.
+  mirroredAnimationHeadingOffsetDegrees: 180,
   // Keep the supporting foot on the stage during recorded playback.
   // Set false for clips with intentional jumps / both feet leaving the floor.
   groundRecordedFeet: true,

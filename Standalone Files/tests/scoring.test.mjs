@@ -36,6 +36,21 @@ test('whole-hand comparison ignores body position, rotation and scale, with inde
   assert.equal(score.compare({left:target.right,right:target.left},target).points,0,'anatomical sides are not swapped');
   assert.equal(score.compare({left:null,right:target.right},target),null,'both hands required');
 });
+test('screen matching exchanges hands and horizontal direction while preserving wrist height and depth',()=>{
+  const target={left:[-.2,.7,.3],right:[1.1,-.3,-.2]};
+  // The live right hand copies the dancer's left hand on screen-right;
+  // the live left copies the dancer's right hand on screen-left.
+  const live={left:[-1.1,-.3,-.2],right:[.2,.7,.3]};
+  const snapshot=JSON.stringify(live);
+  assert.deepEqual(score.handsForView(live,true),target);
+  assert.equal(score.compare(score.handsForView(live,true),target).points,100);
+  assert.ok(score.compare(score.handsForView(target,true),target).points<100,'anatomical copying does not score as an onscreen match');
+  assert.equal(score.compare(score.handsForView(target,false),target).points,100,'unmirrored camera matches the dancer directly');
+  assert.equal(JSON.stringify(live),snapshot,'do not mutate tracking data');
+  assert.equal(score.handsForView(null),null);
+  assert.equal(score.compare(score.handsForView({left:null,right:live.right}),target),null);
+});
+
 test('camera scoring uses wrists only; arbitrary finger positions have no influence',()=>{
   const world=Array.from({length:33},()=>({x:0,y:0,z:0,visibility:1}));
   for(const [id,key] of [[11,'leftShoulder'],[12,'rightShoulder'],[13,'leftElbow'],[14,'rightElbow'],[15,'leftHand'],[16,'rightHand']]) {
